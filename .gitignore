@@ -1,0 +1,21 @@
+# Claude Code worktrees
+.claude/worktrees/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Bot runtime
+bot.db
+data/
+
+# Secrets / local config overrides
+.env
+
+# IDE
+.vscode/
+.idea/
