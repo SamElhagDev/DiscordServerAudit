@@ -6,10 +6,11 @@ _config = None
 def load_config(path: str = "config.yaml") -> dict:
     global _config
     if _config is None:
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Config file not found at: {path}")
-        with open(path, "r") as f:
-            _config = yaml.safe_load(f)
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                _config = yaml.safe_load(f) or {}
+        else:
+            _config = {}
 
         # Allow machine/CI environment variables to override config.yaml values.
         # GitHub Actions secrets set via setx take precedence at runtime

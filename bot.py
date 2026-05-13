@@ -29,7 +29,7 @@ class AdminBot(commands.Bot):
         intents.message_content = True
 
         super().__init__(
-            command_prefix=cfg["bot"].get("prefix", "!"),
+            command_prefix=cfg.get("bot", {}).get("prefix", "!"),
             intents=intents,
             help_command=commands.DefaultHelpCommand()
         )
