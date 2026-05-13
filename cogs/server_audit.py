@@ -22,7 +22,7 @@ class ServerAudit(commands.Cog):
         dead_channels = []
         for channel in guild.text_channels:
             try:
-                last_msg = await channel.history(limit=1).flatten()
+                last_msg = [msg async for msg in channel.history(limit=1)]
                 if not last_msg:
                     dead_channels.append((channel, None))
                 else:
