@@ -45,7 +45,7 @@ jobs:
       - name: Create data directories
         shell: powershell
         run: |
-          New-Item -ItemType Directory -Path $env:DB_PATH.Replace('\bot.db','') -Force | Out-Null
+          New-Item -ItemType Directory -Path $env:DiscordServerAudit_DB_PATH.Replace('\bot.db','') -Force | Out-Null
 
       # 1) Copy code to persistent folder
       - name: Deploy files to persistent folder
