@@ -15,7 +15,6 @@ def load_config(path: str = "config.yaml") -> dict:
         # GitHub Actions secrets set via setx take precedence at runtime
         # without requiring config.yaml to be edited per environment.
         _env_overrides = {
-            "bot.token":        os.environ.get("DiscordServerAudit_TOKEN"),
             "admin_role":       os.environ.get("DiscordServerAudit_ADMIN_ROLE"),
             "log_channel_id":   int(os.environ["DiscordServerAudit_LOG_CHANNEL_ID"]) if os.environ.get("DiscordServerAudit_LOG_CHANNEL_ID") else None,
             "audit_channel_id": int(os.environ["DiscordServerAudit_AUDIT_CHANNEL_ID"]) if os.environ.get("DiscordServerAudit_AUDIT_CHANNEL_ID") else None,

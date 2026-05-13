@@ -1,5 +1,4 @@
 bot:
-  token: "YOUR_BOT_TOKEN_HERE"
   prefix: "/"
 
 # The role name that grants access to all bot commands (exact match, case-sensitive)

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import discord
 from discord.ext import commands
 
@@ -91,10 +92,9 @@ class AdminBot(commands.Bot):
 
 
 async def main():
-    cfg = config.load_config()
-    token = cfg["bot"]["token"]
-    if not token or token == "YOUR_BOT_TOKEN_HERE":
-        raise ValueError("Bot token is not set in config.yaml")
+    token = os.environ.get("DiscordServerAudit_TOKEN")
+    if not token:
+        raise ValueError("DiscordServerAudit_TOKEN environment variable is not set")
 
     bot = AdminBot()
     async with bot:
