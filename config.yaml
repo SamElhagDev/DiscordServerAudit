@@ -1,0 +1,34 @@
+bot:
+  token: "YOUR_BOT_TOKEN_HERE"
+  prefix: "/"
+
+# The role name that grants access to all bot commands (exact match, case-sensitive)
+admin_role: "Bot Admin"
+
+# Channel IDs for audit output (set after bot joins server)
+log_channel_id: 0         # General bot logs
+audit_channel_id: 0       # Audit results posted here
+
+# Scheduler intervals (in hours)
+intervals:
+  security_audit: 24      # How often to run security audit
+  server_audit: 168       # How often to run server recommendations (168 = weekly)
+
+# Security audit thresholds
+security:
+  max_admin_roles: 3              # Warn if more than this many roles have Administrator
+  max_bot_permissions_threshold:  # Permissions bots should NOT have
+    - administrator
+    - manage_guild
+    - ban_members
+  warn_no_2fa: true               # Warn if server 2FA requirement is disabled
+  warn_unverified_bots: true      # Warn about bots with no verified tag
+
+# Server audit thresholds
+server:
+  inactive_channel_days: 14       # Days without a message = dead channel
+  max_empty_channels: 5           # Warn if more than this many channels have no topic/description
+  min_onboarding_channels:        # Channels that should exist by name (partial match)
+    - welcome
+    - rules
+    - announcements
