@@ -23,6 +23,13 @@ jobs:
       DiscordServerAudit_AUDIT_CHANNEL_ID: ${{ secrets.DiscordServerAudit_AUDIT_CHANNEL_ID }}
 
     steps:
+      - name: Clean workspace
+        shell: powershell
+        run: |
+          if (Test-Path "$env:GITHUB_WORKSPACE\.git") {
+            Remove-Item -Recurse -Force "$env:GITHUB_WORKSPACE\.git"
+          }
+
       - uses: actions/checkout@v4
 
       - name: Set up Python 3.10
