@@ -16,11 +16,11 @@ jobs:
     env:
       APP_ROOT: C:\apps\DiscordServerAudit
       APP_TASK: DiscordServerAudit
-      TOKEN: ${{ secrets.TOKEN }}
-      DB_PATH: C:\apps\DiscordServerAudit\data\bot.db
-      ADMIN_ROLE: ${{ secrets.ADMIN_ROLE }}
-      LOG_CHANNEL_ID: ${{ secrets.LOG_CHANNEL_ID }}
-      AUDIT_CHANNEL_ID: ${{ secrets.AUDIT_CHANNEL_ID }}
+      DiscordServerAudit_TOKEN: ${{ secrets.DiscordServerAudit_TOKEN }}
+      DiscordServerAudit_DB_PATH: C:\apps\DiscordServerAudit\data\bot.db
+      DiscordServerAudit_ADMIN_ROLE: ${{ secrets.DiscordServerAudit_ADMIN_ROLE }}
+      DiscordServerAudit_LOG_CHANNEL_ID: ${{ secrets.DiscordServerAudit_LOG_CHANNEL_ID }}
+      DiscordServerAudit_AUDIT_CHANNEL_ID: ${{ secrets.DiscordServerAudit_AUDIT_CHANNEL_ID }}
 
     steps:
       - uses: actions/checkout@v4
@@ -89,7 +89,7 @@ jobs:
           $lines = @()
           $lines += "`$ErrorActionPreference = 'Continue'"
           $lines += "Set-Location '$app'"
-          $lines += 'if (-not $env:TOKEN -and (Test-Path ".env")) {'
+          $lines += 'if (-not $env:DiscordServerAudit_TOKEN -and (Test-Path ".env")) {'
           $lines += '  Get-Content ".env" | ForEach-Object {'
           $lines += "    if (`$_ -match '^\s*#') { return }"
           $lines += "    if (`$_ -match '^\s*$') { return }"
@@ -101,50 +101,50 @@ jobs:
           Set-Content -Path "$env:APP_ROOT\run-bot.ps1" -Value ($lines -join "`r`n") -Encoding UTF8
 
       # 4) Set secrets as machine env vars
-      - name: Set TOKEN as machine env var
+      - name: Set DiscordServerAudit_TOKEN as machine env var
         shell: powershell
         env:
-          TOKEN: ${{ secrets.TOKEN }}
+          DiscordServerAudit_TOKEN: ${{ secrets.DiscordServerAudit_TOKEN }}
         run: |
-          if (-not $env:TOKEN) { throw "Secret TOKEN is missing. Add it in Settings → Secrets → Actions." }
-          setx TOKEN "$env:TOKEN" /M | Out-Null
-          $m = [Environment]::GetEnvironmentVariable('TOKEN','Machine')
-          if (-not $m) { throw "Failed to set machine env var TOKEN." }
+          if (-not $env:DiscordServerAudit_TOKEN) { throw "Secret DiscordServerAudit_TOKEN is missing. Add it in Settings → Secrets → Actions." }
+          setx DiscordServerAudit_TOKEN "$env:DiscordServerAudit_TOKEN" /M | Out-Null
+          $m = [Environment]::GetEnvironmentVariable('DiscordServerAudit_TOKEN','Machine')
+          if (-not $m) { throw "Failed to set machine env var DiscordServerAudit_TOKEN." }
 
-      - name: Set ADMIN_ROLE as machine env var
+      - name: Set DiscordServerAudit_ADMIN_ROLE as machine env var
         shell: powershell
         env:
-          ADMIN_ROLE: ${{ secrets.ADMIN_ROLE }}
+          DiscordServerAudit_ADMIN_ROLE: ${{ secrets.DiscordServerAudit_ADMIN_ROLE }}
         run: |
-          if (-not $env:ADMIN_ROLE) { throw "Secret ADMIN_ROLE is missing. Add it in Settings → Secrets → Actions." }
-          setx ADMIN_ROLE "$env:ADMIN_ROLE" /M | Out-Null
-          $m = [Environment]::GetEnvironmentVariable('ADMIN_ROLE','Machine')
-          if (-not $m) { throw "Failed to set machine env var ADMIN_ROLE." }
+          if (-not $env:DiscordServerAudit_ADMIN_ROLE) { throw "Secret DiscordServerAudit_ADMIN_ROLE is missing. Add it in Settings → Secrets → Actions." }
+          setx DiscordServerAudit_ADMIN_ROLE "$env:DiscordServerAudit_ADMIN_ROLE" /M | Out-Null
+          $m = [Environment]::GetEnvironmentVariable('DiscordServerAudit_ADMIN_ROLE','Machine')
+          if (-not $m) { throw "Failed to set machine env var DiscordServerAudit_ADMIN_ROLE." }
 
-      - name: Set LOG_CHANNEL_ID as machine env var
+      - name: Set DiscordServerAudit_LOG_CHANNEL_ID as machine env var
         shell: powershell
         env:
-          LOG_CHANNEL_ID: ${{ secrets.LOG_CHANNEL_ID }}
+          DiscordServerAudit_LOG_CHANNEL_ID: ${{ secrets.DiscordServerAudit_LOG_CHANNEL_ID }}
         run: |
-          if (-not $env:LOG_CHANNEL_ID) { throw "Secret LOG_CHANNEL_ID is missing. Add it in Settings → Secrets → Actions." }
-          setx LOG_CHANNEL_ID "$env:LOG_CHANNEL_ID" /M | Out-Null
-          $m = [Environment]::GetEnvironmentVariable('LOG_CHANNEL_ID','Machine')
-          if (-not $m) { throw "Failed to set machine env var LOG_CHANNEL_ID." }
+          if (-not $env:DiscordServerAudit_LOG_CHANNEL_ID) { throw "Secret DiscordServerAudit_LOG_CHANNEL_ID is missing. Add it in Settings → Secrets → Actions." }
+          setx DiscordServerAudit_LOG_CHANNEL_ID "$env:DiscordServerAudit_LOG_CHANNEL_ID" /M | Out-Null
+          $m = [Environment]::GetEnvironmentVariable('DiscordServerAudit_LOG_CHANNEL_ID','Machine')
+          if (-not $m) { throw "Failed to set machine env var DiscordServerAudit_LOG_CHANNEL_ID." }
 
-      - name: Set AUDIT_CHANNEL_ID as machine env var
+      - name: Set DiscordServerAudit_AUDIT_CHANNEL_ID as machine env var
         shell: powershell
         env:
-          AUDIT_CHANNEL_ID: ${{ secrets.AUDIT_CHANNEL_ID }}
+          DiscordServerAudit_AUDIT_CHANNEL_ID: ${{ secrets.DiscordServerAudit_AUDIT_CHANNEL_ID }}
         run: |
-          if (-not $env:AUDIT_CHANNEL_ID) { throw "Secret AUDIT_CHANNEL_ID is missing. Add it in Settings → Secrets → Actions." }
-          setx AUDIT_CHANNEL_ID "$env:AUDIT_CHANNEL_ID" /M | Out-Null
-          $m = [Environment]::GetEnvironmentVariable('AUDIT_CHANNEL_ID','Machine')
-          if (-not $m) { throw "Failed to set machine env var AUDIT_CHANNEL_ID." }
+          if (-not $env:DiscordServerAudit_AUDIT_CHANNEL_ID) { throw "Secret DiscordServerAudit_AUDIT_CHANNEL_ID is missing. Add it in Settings → Secrets → Actions." }
+          setx DiscordServerAudit_AUDIT_CHANNEL_ID "$env:DiscordServerAudit_AUDIT_CHANNEL_ID" /M | Out-Null
+          $m = [Environment]::GetEnvironmentVariable('DiscordServerAudit_AUDIT_CHANNEL_ID','Machine')
+          if (-not $m) { throw "Failed to set machine env var DiscordServerAudit_AUDIT_CHANNEL_ID." }
 
-      - name: Set DB_PATH as machine env var
+      - name: Set DiscordServerAudit_DB_PATH as machine env var
         shell: powershell
         run: |
-          setx DB_PATH "$env:DB_PATH" /M | Out-Null
+          setx DiscordServerAudit_DB_PATH "$env:DiscordServerAudit_DB_PATH" /M | Out-Null
 
       # 5) Stop existing bot if running
       - name: Stop existing bot (if running)

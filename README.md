@@ -91,10 +91,10 @@ Set these under **Settings → Secrets and variables → Actions**:
 
 | Secret | Description |
 |---|---|
-| `TOKEN` | Your Discord bot token |
-| `ADMIN_ROLE` | The admin role name (e.g. `Bot Admin`) |
-| `LOG_CHANNEL_ID` | Discord channel ID for general bot logs |
-| `AUDIT_CHANNEL_ID` | Discord channel ID for audit results |
+| `DiscordServerAudit_TOKEN` | Your Discord bot token |
+| `DiscordServerAudit_ADMIN_ROLE` | The admin role name (e.g. `Bot Admin`) |
+| `DiscordServerAudit_LOG_CHANNEL_ID` | Discord channel ID for general bot logs |
+| `DiscordServerAudit_AUDIT_CHANNEL_ID` | Discord channel ID for audit results |
 
 ### What the workflow does
 1. Lints with flake8

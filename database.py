@@ -3,7 +3,7 @@ import datetime
 from contextlib import contextmanager
 
 import os
-DB_PATH = os.environ.get("DB_PATH", "bot.db")
+DB_PATH = os.environ.get("DiscordServerAudit_DB_PATH", "bot.db")
 
 def init_db():
     """Initialize all tables."""
