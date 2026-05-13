@@ -17,6 +17,7 @@ jobs:
       DiscordServerAudit_APP_ROOT: C:\apps\DiscordServerAudit
       DiscordServerAudit_APP_TASK: DiscordServerAudit
       DiscordServerAudit_TOKEN: ${{ secrets.DiscordServerAudit_TOKEN }}
+      DiscordServerAudit_PREFIX: ${{ secrets.DiscordServerAudit_PREFIX }}
       DiscordServerAudit_DB_PATH: C:\apps\DiscordServerAudit\data\bot.db
       DiscordServerAudit_ADMIN_ROLE: ${{ secrets.DiscordServerAudit_ADMIN_ROLE }}
       DiscordServerAudit_LOG_CHANNEL_ID: ${{ secrets.DiscordServerAudit_LOG_CHANNEL_ID }}
@@ -108,6 +109,14 @@ jobs:
           Set-Content -Path "$env:DiscordServerAudit_APP_ROOT\run-bot.ps1" -Value ($lines -join "`r`n") -Encoding UTF8
 
       # 4) Set secrets as machine env vars
+      - name: Set DiscordServerAudit_PREFIX as machine env var
+        shell: powershell
+        env:
+          DiscordServerAudit_PREFIX: ${{ secrets.DiscordServerAudit_PREFIX }}
+        run: |
+          $prefix = if ($env:DiscordServerAudit_PREFIX) { $env:DiscordServerAudit_PREFIX } else { "!" }
+          setx DiscordServerAudit_PREFIX "$prefix" /M | Out-Null
+
       - name: Set DiscordServerAudit_TOKEN as machine env var
         shell: powershell
         env:
