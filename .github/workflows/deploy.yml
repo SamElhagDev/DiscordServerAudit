@@ -166,7 +166,7 @@ jobs:
           if ($env:DiscordServerAudit_GEMINI_KEY) {
             setx DiscordServerAudit_GEMINI_KEY "$env:DiscordServerAudit_GEMINI_KEY" /M | Out-Null
           } else {
-            Write-Host "DiscordServerAudit_GEMINI_KEY not set — Gemini features will be disabled."
+            Write-Host "DiscordServerAudit_GEMINI_KEY not set - Gemini features will be disabled."
           }
 
       - name: Set DiscordServerAudit_DB_PATH as machine env var
