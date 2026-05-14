@@ -10,7 +10,7 @@ audit_channel_id: 0       # Audit results posted here
 
 # Scheduler intervals (in hours)
 intervals:
-  security_audit: 24      # How often to run security audit
+  security_audit: 168      # How often to run security audit
   server_audit: 168       # How often to run server recommendations (168 = weekly)
 
 # Security audit thresholds
