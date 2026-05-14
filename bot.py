@@ -61,6 +61,7 @@ _LOG_PATH = _setup_logging()
 import config  # noqa: E402
 import database
 from utils.scheduler import IntervalScheduler
+from utils.help import RichHelpCommand
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ class AdminBot(commands.Bot):
         super().__init__(
             command_prefix=cfg.get("bot", {}).get("prefix", "!"),
             intents=intents,
-            help_command=commands.DefaultHelpCommand(),
+            help_command=RichHelpCommand(),
         )
         self.scheduler = IntervalScheduler(self)
         self._start_time = time.monotonic()
