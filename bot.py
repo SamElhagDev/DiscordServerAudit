@@ -65,6 +65,7 @@ from utils.scheduler import IntervalScheduler
 logger = logging.getLogger(__name__)
 
 COGS = [
+    "cogs.admin",
     "cogs.bulk_tasks",
     "cogs.security_audit",
     "cogs.server_audit",
