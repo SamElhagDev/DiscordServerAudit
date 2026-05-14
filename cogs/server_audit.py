@@ -5,6 +5,7 @@ import datetime
 import database
 import config
 from utils.permissions import has_admin_role, build_embed, severity_color
+from utils.gemini import summarize_findings
 
 
 class ServerAudit(commands.Cog):
@@ -155,6 +156,10 @@ class ServerAudit(commands.Cog):
                 color=severity_color(f["severity"])
             )
             await channel.send(embed=e)
+
+        ai_summary = await summarize_findings(findings, "server health")
+        if ai_summary:
+            await channel.send(embed=build_embed("🤖 AI Action Plan", ai_summary, discord.Color.purple()))
 
     @commands.command(name="serveraudit")
     @has_admin_role()

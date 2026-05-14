@@ -22,6 +22,7 @@ jobs:
       DiscordServerAudit_ADMIN_ROLE: ${{ secrets.DiscordServerAudit_ADMIN_ROLE }}
       DiscordServerAudit_LOG_CHANNEL_ID: ${{ secrets.DiscordServerAudit_LOG_CHANNEL_ID }}
       DiscordServerAudit_AUDIT_CHANNEL_ID: ${{ secrets.DiscordServerAudit_AUDIT_CHANNEL_ID }}
+      DiscordServerAudit_GEMINI_KEY: ${{ secrets.DiscordServerAudit_GEMINI_KEY }}
 
     steps:
       - name: Clean workspace
@@ -156,6 +157,17 @@ jobs:
           setx DiscordServerAudit_AUDIT_CHANNEL_ID "$env:DiscordServerAudit_AUDIT_CHANNEL_ID" /M | Out-Null
           $m = [Environment]::GetEnvironmentVariable('DiscordServerAudit_AUDIT_CHANNEL_ID','Machine')
           if (-not $m) { throw "Failed to set machine env var DiscordServerAudit_AUDIT_CHANNEL_ID." }
+
+      - name: Set DiscordServerAudit_GEMINI_KEY as machine env var
+        shell: powershell
+        env:
+          DiscordServerAudit_GEMINI_KEY: ${{ secrets.DiscordServerAudit_GEMINI_KEY }}
+        run: |
+          if ($env:DiscordServerAudit_GEMINI_KEY) {
+            setx DiscordServerAudit_GEMINI_KEY "$env:DiscordServerAudit_GEMINI_KEY" /M | Out-Null
+          } else {
+            Write-Host "DiscordServerAudit_GEMINI_KEY not set — Gemini features will be disabled."
+          }
 
       - name: Set DiscordServerAudit_DB_PATH as machine env var
         shell: powershell

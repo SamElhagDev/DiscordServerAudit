@@ -18,6 +18,7 @@ COGS = [
     "cogs.bulk_tasks",
     "cogs.security_audit",
     "cogs.server_audit",
+    "cogs.natural_language",
 ]
 
 

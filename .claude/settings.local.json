@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordServerAudit\" -Depth 2)",
+      "Bash(Select-Object FullName)",
+      "Bash(grep -E \"\\\\.\\(py|yaml|env|json|md\\)$\")"
+    ]
+  }
+}

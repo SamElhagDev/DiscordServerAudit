@@ -20,6 +20,7 @@ def load_config(path: str = "config.yaml") -> dict:
             "admin_role":       os.environ.get("DiscordServerAudit_ADMIN_ROLE"),
             "log_channel_id":   int(os.environ["DiscordServerAudit_LOG_CHANNEL_ID"]) if os.environ.get("DiscordServerAudit_LOG_CHANNEL_ID") else None,
             "audit_channel_id": int(os.environ["DiscordServerAudit_AUDIT_CHANNEL_ID"]) if os.environ.get("DiscordServerAudit_AUDIT_CHANNEL_ID") else None,
+            "gemini_key":       os.environ.get("DiscordServerAudit_GEMINI_KEY"),
         }
 
         for dotkey, value in _env_overrides.items():

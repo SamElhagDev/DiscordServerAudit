@@ -5,6 +5,7 @@ from typing import Optional
 import database
 import config
 from utils.permissions import has_admin_role, build_embed, severity_color
+from utils.gemini import summarize_findings
 
 
 DANGEROUS_PERMS = [
@@ -145,6 +146,10 @@ class SecurityAudit(commands.Cog):
                 color=color
             )
             await channel.send(embed=e)
+
+        ai_summary = await summarize_findings(findings, "security")
+        if ai_summary:
+            await channel.send(embed=build_embed("🤖 AI Action Plan", ai_summary, discord.Color.purple()))
 
     # -------------------------------------------------------------------------
     # Manual trigger command
