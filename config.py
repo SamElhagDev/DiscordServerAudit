@@ -1,7 +1,10 @@
-import yaml
+import logging
 import os
+import yaml
 
+logger = logging.getLogger(__name__)
 _config = None
+
 
 def load_config(path: str = "config.yaml") -> dict:
     global _config
@@ -9,12 +12,11 @@ def load_config(path: str = "config.yaml") -> dict:
         if os.path.exists(path):
             with open(path, "r") as f:
                 _config = yaml.safe_load(f) or {}
+            logger.info("Config loaded from %r (%d top-level keys)", path, len(_config))
         else:
             _config = {}
+            logger.warning("Config file %r not found — using defaults and env vars only", path)
 
-        # Allow machine/CI environment variables to override config.yaml values.
-        # GitHub Actions secrets set via setx take precedence at runtime
-        # without requiring config.yaml to be edited per environment.
         _env_overrides = {
             "bot.prefix":       os.environ.get("DiscordServerAudit_PREFIX"),
             "admin_role":       os.environ.get("DiscordServerAudit_ADMIN_ROLE"),
@@ -23,9 +25,18 @@ def load_config(path: str = "config.yaml") -> dict:
             "gemini_key":       os.environ.get("DiscordServerAudit_GEMINI_KEY"),
         }
 
+        applied = []
         for dotkey, value in _env_overrides.items():
             if value is not None:
                 _set_nested(_config, dotkey.split("."), value)
+                # Mask secret values in log output
+                display = "***" if "key" in dotkey or "token" in dotkey else repr(value)
+                applied.append(f"{dotkey}={display}")
+
+        if applied:
+            logger.info("Env overrides applied: %s", ", ".join(applied))
+        else:
+            logger.debug("No environment variable overrides applied")
 
     return _config
 

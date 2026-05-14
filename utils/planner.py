@@ -1,11 +1,13 @@
-import asyncio
 import json
+import logging
 import re
-import google.generativeai as genai
+import time
+from google import genai
 
 import config
 
-_model = None
+logger = logging.getLogger(__name__)
+_client = None
 
 ACTIONS = [
     {
@@ -74,21 +76,25 @@ ACTIONS = [
 ]
 
 
-def _get_model():
-    global _model
-    if _model is None:
+def _get_client():
+    global _client
+    if _client is None:
         key = config.get("gemini_key")
         if not key:
+            logger.warning("gemini_key not configured — natural language planning unavailable")
             return None
-        genai.configure(api_key=key)
-        _model = genai.GenerativeModel("gemini-2.0-flash")
-    return _model
+        try:
+            _client = genai.Client(api_key=key)
+            logger.info("Gemini client (planner) initialised")
+        except Exception:
+            logger.error("Failed to initialise Gemini planner client", exc_info=True)
+    return _client
 
 
 async def build_plan(query: str) -> dict | None:
     """Map a natural-language admin query to a single known action via Gemini."""
-    model = _get_model()
-    if not model:
+    client = _get_client()
+    if not client:
         return None
 
     actions_text = json.dumps(
@@ -105,11 +111,20 @@ async def build_plan(query: str) -> dict | None:
         'If nothing matches, use action "unknown".'
     )
 
+    logger.debug("Sending plan request to Gemini | query=%r", query)
+    t0 = time.perf_counter()
     try:
-        response = await asyncio.to_thread(model.generate_content, prompt)
+        response = await client.aio.models.generate_content(
+            model="gemini-3.1-flash-lite",
+            contents=prompt,
+        )
+        elapsed = time.perf_counter() - t0
         text = response.text.strip()
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
+        logger.debug("Gemini raw response (%.2fs): %s", elapsed, text)
         return json.loads(text)
-    except Exception:
+    except Exception as e:
+        elapsed = time.perf_counter() - t0
+        logger.error("build_plan failed after %.2fs | query=%r | error=%s", elapsed, query, e, exc_info=True)
         return None

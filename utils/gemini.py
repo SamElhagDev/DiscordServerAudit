@@ -1,26 +1,32 @@
-import asyncio
-import google.generativeai as genai
+import logging
+import time
+from google import genai
 
 import config
 
-_model = None
+logger = logging.getLogger(__name__)
+_client = None
 
 
-def _get_model():
-    global _model
-    if _model is None:
+def _get_client():
+    global _client
+    if _client is None:
         key = config.get("gemini_key")
         if not key:
+            logger.debug("gemini_key not set — AI summaries disabled")
             return None
-        genai.configure(api_key=key)
-        _model = genai.GenerativeModel("gemini-2.0-flash")
-    return _model
+        try:
+            _client = genai.Client(api_key=key)
+            logger.info("Gemini client initialised")
+        except Exception:
+            logger.error("Failed to initialise Gemini client", exc_info=True)
+    return _client
 
 
 async def summarize_findings(findings: list[dict], audit_type: str) -> str | None:
     """Return an AI-generated action plan for the given audit findings, or None if Gemini is not configured."""
-    model = _get_model()
-    if not model or not findings:
+    client = _get_client()
+    if not client or not findings:
         return None
 
     lines = "\n".join(
@@ -34,8 +40,21 @@ async def summarize_findings(findings: list[dict], audit_type: str) -> str | Non
         f"Findings:\n{lines}"
     )
 
+    logger.debug("Requesting Gemini summary | audit_type=%r findings=%d", audit_type, len(findings))
+    t0 = time.perf_counter()
     try:
-        response = await asyncio.to_thread(_model.generate_content, prompt)
-        return response.text
+        response = await client.aio.models.generate_content(
+            model="gemini-3.1-flash-lite",
+            contents=prompt,
+        )
+        elapsed = time.perf_counter() - t0
+        summary = response.text
+        logger.info(
+            "Gemini summary generated | audit_type=%r findings=%d length=%d chars elapsed=%.2fs",
+            audit_type, len(findings), len(summary), elapsed,
+        )
+        return summary
     except Exception:
+        elapsed = time.perf_counter() - t0
+        logger.error("Gemini summarise call failed after %.2fs", elapsed, exc_info=True)
         return None
