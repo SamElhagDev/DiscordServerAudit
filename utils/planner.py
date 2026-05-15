@@ -73,6 +73,64 @@ ACTIONS = [
         "parameters": {},
         "is_destructive": False,
     },
+    {
+        "name": "find_members_with_role",
+        "description": "List all members who currently have a specific role",
+        "parameters": {"role_name": "Exact role name"},
+        "is_destructive": False,
+    },
+    {
+        "name": "kick_member",
+        "description": "Kick a single member from the server by their username or display name",
+        "parameters": {"member_name": "Username or display name of the member to kick", "reason": "Optional reason for the kick"},
+        "is_destructive": True,
+    },
+    {
+        "name": "ban_member",
+        "description": "Ban a single member from the server by their username or display name",
+        "parameters": {"member_name": "Username or display name of the member to ban", "reason": "Optional reason for the ban"},
+        "is_destructive": True,
+    },
+    {
+        "name": "set_slowmode",
+        "description": "Set the slowmode delay on a text channel to throttle how often members can send messages",
+        "parameters": {"channel_name": "Channel name without #", "seconds": "Slowmode delay in seconds (0 to disable, max 21600)"},
+        "is_destructive": False,
+    },
+    {
+        "name": "lock_channel",
+        "description": "Lock a text channel so @everyone cannot send messages (useful during incidents or announcements)",
+        "parameters": {"channel_name": "Channel name without #"},
+        "is_destructive": False,
+    },
+    {
+        "name": "unlock_channel",
+        "description": "Unlock a previously locked text channel, restoring @everyone send permissions",
+        "parameters": {"channel_name": "Channel name without #"},
+        "is_destructive": False,
+    },
+    {
+        "name": "rename_channel",
+        "description": "Rename an existing text channel",
+        "parameters": {"channel_name": "Current channel name without #", "new_name": "New channel name without #"},
+        "is_destructive": False,
+    },
+    {
+        "name": "set_channel_topic",
+        "description": "Set or update the topic/description shown at the top of a text channel",
+        "parameters": {"channel_name": "Channel name without #", "topic": "New topic text"},
+        "is_destructive": False,
+    },
+    {
+        "name": "delete_user_messages",
+        "description": "Delete all recent messages from a specific user in one channel or across all channels",
+        "parameters": {
+            "member_name": "Username or display name of the member whose messages to delete",
+            "channel_name": "Channel name without # — omit or leave blank to search all channels",
+            "scan_limit": "How many recent messages to scan per channel (default 500, max 1000)",
+        },
+        "is_destructive": True,
+    },
 ]
 
 
@@ -92,7 +150,27 @@ def _get_client():
 
 
 async def build_plan(query: str) -> dict | None:
-    """Map a natural-language admin query to a single known action via Gemini."""
+    """
+    Map a natural-language admin query to one or more chained actions via Gemini.
+
+    Returns a dict with shape:
+    {
+        "steps": [
+            {
+                "action": "<name>",
+                "parameters": {},
+                "summary": "<one sentence>",
+                "risks": "<one sentence or null>",
+                "is_destructive": true|false
+            },
+            ...
+        ],
+        "overall_summary": "<one sentence describing the full chain>",
+        "is_destructive": true|false   # true if ANY step is destructive
+    }
+    Returns None on Gemini error.
+    Steps list contains a single entry with action "unknown" if nothing matches.
+    """
     client = _get_client()
     if not client:
         return None
@@ -104,11 +182,22 @@ async def build_plan(query: str) -> dict | None:
     prompt = (
         f'A Discord server admin typed: "{query}"\n\n'
         f"Available actions:\n{actions_text}\n\n"
-        "Pick the single best matching action and fill in its parameters from the query.\n"
+        "Map the request to one or more actions from the list above, executed in order.\n"
         "Return ONLY a JSON object (no markdown fences, no explanation) with this exact shape:\n"
-        '{"action":"<name>","parameters":{},"summary":"<one sentence describing what will happen>",'
-        '"risks":"<one sentence about risks, or None if safe>","is_destructive":<true|false>}\n'
-        'If nothing matches, use action "unknown".'
+        "{\n"
+        '  "steps": [\n'
+        '    {\n'
+        '      "action": "<name>",\n'
+        '      "parameters": {},\n'
+        '      "summary": "<one sentence describing this step>",\n'
+        '      "risks": "<one sentence about risks, or null if safe>",\n'
+        '      "is_destructive": true\n'
+        "    }\n"
+        "  ],\n"
+        '  "overall_summary": "<one sentence describing the full plan>",\n'
+        '  "is_destructive": true\n'
+        "}\n"
+        'If nothing matches any action, return a single step with action "unknown".'
     )
 
     logger.debug("Sending plan request to Gemini | query=%r", query)
