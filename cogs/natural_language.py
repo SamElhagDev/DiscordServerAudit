@@ -17,14 +17,19 @@ _BULK_DELETE_DELAY = 1.0  # seconds between bulk-delete batches
 
 
 async def _api(coro_factory, retries: int = 3):
-    """Call coro_factory(), retrying up to `retries` times on a 429 rate-limit response."""
+    """Call coro_factory(), retrying on 429 (rate limit) and 5xx (Discord server errors)."""
     for attempt in range(retries):
         try:
             return await coro_factory()
         except discord.HTTPException as exc:
-            if exc.status == 429 and attempt < retries - 1:
-                wait = getattr(exc, "retry_after", 1.0) or 1.0
-                logger.warning("Rate limited — waiting %.2fs before retry (attempt %d/%d)", wait, attempt + 1, retries)
+            is_rate_limit = exc.status == 429
+            is_server_error = exc.status >= 500
+            if (is_rate_limit or is_server_error) and attempt < retries - 1:
+                wait = (getattr(exc, "retry_after", None) or 1.0) if is_rate_limit else (2 ** attempt)
+                logger.warning(
+                    "Discord error %d — waiting %.2fs before retry (attempt %d/%d)",
+                    exc.status, wait, attempt + 1, retries,
+                )
                 await asyncio.sleep(wait)
             else:
                 raise
@@ -48,13 +53,25 @@ async def _purge_messages(
     recent: list[discord.Message] = []
     old: list[discord.Message] = []
 
-    async for msg in channel.history(limit=limit, oldest_first=False):
-        if check and not check(msg):
-            continue
-        if msg.created_at > cutoff:
-            recent.append(msg)
-        else:
-            old.append(msg)
+    for attempt in range(3):
+        recent.clear()
+        old.clear()
+        try:
+            async for msg in channel.history(limit=limit, oldest_first=False):
+                if check and not check(msg):
+                    continue
+                if msg.created_at > cutoff:
+                    recent.append(msg)
+                else:
+                    old.append(msg)
+            break
+        except discord.HTTPException as exc:
+            if exc.status >= 500 and attempt < 2:
+                wait = 2 ** attempt
+                logger.warning("Discord %d fetching history for #%s — retrying in %ds", exc.status, channel.name, wait)
+                await asyncio.sleep(wait)
+            else:
+                raise
 
     deleted = 0
 
