@@ -1,5 +1,6 @@
 import datetime
 import logging
+import re
 import time
 import discord
 from discord.ext import commands
@@ -8,6 +9,168 @@ from utils.permissions import has_admin_role, build_embed
 from utils.planner import build_plan
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Resolvers — try ID / mention / exact name / case-insensitive / partial
+# ---------------------------------------------------------------------------
+
+def resolve_text_channel(guild: discord.Guild, value: str) -> discord.TextChannel | None:
+    value = value.strip().lstrip("#")
+    m = re.match(r"<#(\d+)>", value)
+    if m:
+        return guild.get_channel(int(m.group(1)))
+    if value.isdigit():
+        return guild.get_channel(int(value))
+    ch = discord.utils.get(guild.text_channels, name=value)
+    if ch:
+        return ch
+    low = value.lower()
+    for ch in guild.text_channels:
+        if ch.name.lower() == low:
+            return ch
+    for ch in guild.text_channels:
+        if low in ch.name.lower():
+            return ch
+    return None
+
+
+def resolve_role(guild: discord.Guild, value: str) -> discord.Role | None:
+    value = value.strip()
+    m = re.match(r"<@&(\d+)>", value)
+    if m:
+        return guild.get_role(int(m.group(1)))
+    if value.isdigit():
+        return guild.get_role(int(value))
+    role = discord.utils.get(guild.roles, name=value)
+    if role:
+        return role
+    low = value.lower()
+    for role in guild.roles:
+        if role.name.lower() == low:
+            return role
+    for role in guild.roles:
+        if low in role.name.lower():
+            return role
+    return None
+
+
+def resolve_category(guild: discord.Guild, value: str) -> discord.CategoryChannel | None:
+    value = value.strip()
+    if value.isdigit():
+        ch = guild.get_channel(int(value))
+        return ch if isinstance(ch, discord.CategoryChannel) else None
+    cat = discord.utils.get(guild.categories, name=value)
+    if cat:
+        return cat
+    low = value.lower()
+    for cat in guild.categories:
+        if cat.name.lower() == low:
+            return cat
+    for cat in guild.categories:
+        if low in cat.name.lower():
+            return cat
+    return None
+
+
+def resolve_member(guild: discord.Guild, value: str) -> discord.Member | None:
+    value = value.strip()
+    m = re.match(r"<@!?(\d+)>", value)
+    if m:
+        return guild.get_member(int(m.group(1)))
+    if value.isdigit():
+        return guild.get_member(int(value))
+    member = discord.utils.find(lambda mem: mem.name == value or mem.display_name == value, guild.members)
+    if member:
+        return member
+    low = value.lower()
+    for mem in guild.members:
+        if mem.name.lower() == low or mem.display_name.lower() == low:
+            return mem
+    for mem in guild.members:
+        if low in mem.name.lower() or low in mem.display_name.lower():
+            return mem
+    return None
+
+
+def resolve_voice_channel(guild: discord.Guild, value: str) -> discord.VoiceChannel | None:
+    value = value.strip()
+    m = re.match(r"<#(\d+)>", value)
+    if m:
+        return guild.get_channel(int(m.group(1)))
+    if value.isdigit():
+        return guild.get_channel(int(value))
+    vc = discord.utils.get(guild.voice_channels, name=value)
+    if vc:
+        return vc
+    low = value.lower()
+    for vc in guild.voice_channels:
+        if vc.name.lower() == low:
+            return vc
+    for vc in guild.voice_channels:
+        if low in vc.name.lower():
+            return vc
+    return None
+
+
+def resolve_any_channel(guild: discord.Guild, value: str) -> discord.abc.GuildChannel | None:
+    value = value.strip().lstrip("#")
+    m = re.match(r"<#(\d+)>", value)
+    if m:
+        return guild.get_channel(int(m.group(1)))
+    if value.isdigit():
+        return guild.get_channel(int(value))
+    ch = discord.utils.get(guild.channels, name=value)
+    if ch:
+        return ch
+    low = value.lower()
+    for ch in guild.channels:
+        if ch.name.lower() == low:
+            return ch
+    for ch in guild.channels:
+        if low in ch.name.lower():
+            return ch
+    return None
+
+
+async def resolve_ban(guild: discord.Guild, value: str):
+    """Resolve a banned user by ID, mention, exact username, or case-insensitive username."""
+    value = value.strip()
+    m = re.match(r"<@!?(\d+)>", value)
+    target_id = int(m.group(1)) if m else (int(value) if value.isdigit() else None)
+    low = value.lower()
+    async for entry in guild.bans():
+        if target_id and entry.user.id == target_id:
+            return entry
+        if entry.user.name == value:
+            return entry
+        if entry.user.name.lower() == low:
+            return entry
+    # partial match as last resort
+    async for entry in guild.bans():
+        if low in entry.user.name.lower():
+            return entry
+    return None
+
+
+def _member_not_found(guild: discord.Guild, raw: str) -> str:
+    sample = ", ".join(m.display_name for m in list(guild.members)[:8])
+    return f"Member `{raw}` not found. Sample members: {sample}"
+
+
+def _role_not_found(guild: discord.Guild, raw: str) -> str:
+    sample = ", ".join(r.name for r in guild.roles[1:9])
+    return f"Role `{raw}` not found. Available: {sample}"
+
+
+def _channel_not_found(guild: discord.Guild, raw: str) -> str:
+    sample = ", ".join("#" + c.name for c in guild.text_channels[:8])
+    return f"Channel `#{raw}` not found. Available: {sample}"
+
+
+def _category_not_found(guild: discord.Guild, raw: str) -> str:
+    sample = ", ".join(c.name for c in guild.categories[:8])
+    return f"Category `{raw}` not found. Available: {sample}"
 
 
 class ConfirmView(discord.ui.View):
@@ -168,15 +331,27 @@ class NaturalLanguage(commands.Cog):
         guild = ctx.guild
 
         if action == "bulk_delete":
-            channel_name = params.get("channel_name", "")
-            count = max(1, min(int(params.get("count", 100)), 100))
-            channel = discord.utils.get(guild.text_channels, name=channel_name)
+            raw = params.get("channel_name", "")
+            raw_count = params.get("count", "all")
+            # None / "all" / 0 / missing → delete everything; otherwise parse as int
+            if str(raw_count).strip().lower() in ("all", "none", "", "0"):
+                count = None
+            else:
+                try:
+                    count = max(1, int(raw_count))
+                except (ValueError, TypeError):
+                    count = None
+            channel = resolve_text_channel(guild, raw)
             if not channel:
-                logger.warning("bulk_delete: channel %r not found | guild=%r (ID=%s)", channel_name, guild.name, guild.id)
-                return f"Channel `#{channel_name}` not found."
-            logger.info("Executing bulk_delete | channel=#%s count=%d | guild=%r (ID=%s)", channel_name, count, guild.name, guild.id)
+                logger.warning("bulk_delete: channel %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return f"Channel `#{raw}` not found. Available: {', '.join('#' + c.name for c in guild.text_channels[:10])}"
+            logger.info(
+                "Executing bulk_delete | channel=#%s (ID=%s) count=%s | guild=%r (ID=%s)",
+                channel.name, channel.id, count if count is not None else "all", guild.name, guild.id,
+            )
             deleted = await channel.purge(limit=count)
-            return f"Deleted {len(deleted)} messages from `#{channel_name}`."
+            count_str = str(len(deleted)) if count is None else f"{len(deleted)}/{count}"
+            return f"Deleted {count_str} messages from `#{channel.name}`."
 
         if action == "prune_members":
             days = max(1, min(int(params.get("days", 7)), 30))
@@ -185,58 +360,58 @@ class NaturalLanguage(commands.Cog):
             return f"Pruned {pruned} inactive members ({days}+ days with no roles)."
 
         if action == "bulk_role_add":
-            role_name = params.get("role_name", "")
-            role = discord.utils.get(guild.roles, name=role_name)
+            raw = params.get("role_name", "")
+            role = resolve_role(guild, raw)
             if not role:
-                logger.warning("bulk_role_add: role %r not found | guild=%r (ID=%s)", role_name, guild.name, guild.id)
-                return f"Role `{role_name}` not found."
+                logger.warning("bulk_role_add: role %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return f"Role `{raw}` not found. Available: {', '.join(r.name for r in guild.roles[1:11])}"
             count = 0
-            logger.info("Executing bulk_role_add | role=%r | guild=%r (ID=%s)", role_name, guild.name, guild.id)
+            logger.info("Executing bulk_role_add | role=%r (ID=%s) | guild=%r (ID=%s)", role.name, role.id, guild.name, guild.id)
             for member in guild.members:
                 if role not in member.roles:
                     await member.add_roles(role)
                     count += 1
-            return f"Added `{role_name}` to {count} members."
+            return f"Added `{role.name}` to {count} members."
 
         if action == "bulk_role_remove":
-            role_name = params.get("role_name", "")
-            role = discord.utils.get(guild.roles, name=role_name)
+            raw = params.get("role_name", "")
+            role = resolve_role(guild, raw)
             if not role:
-                logger.warning("bulk_role_remove: role %r not found | guild=%r (ID=%s)", role_name, guild.name, guild.id)
-                return f"Role `{role_name}` not found."
+                logger.warning("bulk_role_remove: role %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return f"Role `{raw}` not found. Available: {', '.join(r.name for r in guild.roles[1:11])}"
             count = 0
-            logger.info("Executing bulk_role_remove | role=%r | guild=%r (ID=%s)", role_name, guild.name, guild.id)
+            logger.info("Executing bulk_role_remove | role=%r (ID=%s) | guild=%r (ID=%s)", role.name, role.id, guild.name, guild.id)
             for member in guild.members:
                 if role in member.roles:
                     await member.remove_roles(role)
                     count += 1
-            return f"Removed `{role_name}` from {count} members."
+            return f"Removed `{role.name}` from {count} members."
 
         if action == "bulk_create_channels":
-            category_name = params.get("category_name", "")
+            raw_cat = params.get("category_name", "")
             names = [n.strip() for n in params.get("channel_names", "").split(",") if n.strip()]
             if not names:
                 return "No channel names provided."
-            category = discord.utils.get(guild.categories, name=category_name)
+            category = resolve_category(guild, raw_cat)
             if not category:
-                category = await guild.create_category(category_name)
-                logger.info("Created category %r | guild=%r (ID=%s)", category_name, guild.name, guild.id)
-            logger.info("Executing bulk_create_channels | category=%r names=%s | guild=%r (ID=%s)", category_name, names, guild.name, guild.id)
+                category = await guild.create_category(raw_cat)
+                logger.info("Created category %r | guild=%r (ID=%s)", raw_cat, guild.name, guild.id)
+            logger.info("Executing bulk_create_channels | category=%r (ID=%s) names=%s | guild=%r (ID=%s)", category.name, category.id, names, guild.name, guild.id)
             for name in names:
                 await guild.create_text_channel(name, category=category)
-            return f"Created {len(names)} channels in `{category_name}`."
+            return f"Created {len(names)} channels in `{category.name}`."
 
         if action == "bulk_delete_channels":
-            category_name = params.get("category_name", "")
-            category = discord.utils.get(guild.categories, name=category_name)
+            raw = params.get("category_name", "")
+            category = resolve_category(guild, raw)
             if not category:
-                logger.warning("bulk_delete_channels: category %r not found | guild=%r (ID=%s)", category_name, guild.name, guild.id)
-                return f"Category `{category_name}` not found."
+                logger.warning("bulk_delete_channels: category %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return f"Category `{raw}` not found. Available: {', '.join(c.name for c in guild.categories[:10])}"
             count = len(category.channels)
-            logger.info("Executing bulk_delete_channels | category=%r channels=%d | guild=%r (ID=%s)", category_name, count, guild.name, guild.id)
+            logger.info("Executing bulk_delete_channels | category=%r (ID=%s) channels=%d | guild=%r (ID=%s)", category.name, category.id, count, guild.name, guild.id)
             for ch in list(category.channels):
                 await ch.delete()
-            return f"Deleted {count} channels from `{category_name}`."
+            return f"Deleted {count} channels from `{category.name}`."
 
         if action == "security_audit":
             cog = self.bot.get_cog("SecurityAudit")
@@ -289,127 +464,128 @@ class NaturalLanguage(commands.Cog):
             return f"**{len(roleless)} members with no roles:** {names}{overflow}"
 
         if action == "find_members_with_role":
-            role_name = params.get("role_name", "")
-            role = discord.utils.get(guild.roles, name=role_name)
+            raw = params.get("role_name", "")
+            role = resolve_role(guild, raw)
             if not role:
-                return f"Role `{role_name}` not found."
+                logger.warning("find_members_with_role: role %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _role_not_found(guild, raw)
             members = [m for m in role.members if not m.bot]
             if not members:
-                return f"No members have the `{role_name}` role."
+                return f"No members have the `{role.name}` role."
             names = ", ".join(m.display_name for m in members[:20])
             overflow = f" (+{len(members) - 20} more)" if len(members) > 20 else ""
-            return f"**{len(members)} members with `{role_name}`:** {names}{overflow}"
+            return f"**{len(members)} members with `{role.name}`:** {names}{overflow}"
 
         if action == "kick_member":
-            member_name = params.get("member_name", "").lower()
+            raw = params.get("member_name", "")
             reason = params.get("reason") or f"Kicked by {ctx.author}"
-            member = discord.utils.find(
-                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
-                guild.members,
-            )
+            member = resolve_member(guild, raw)
             if not member:
-                return f"Member `{member_name}` not found."
+                logger.warning("kick_member: member %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _member_not_found(guild, raw)
             await member.kick(reason=reason)
             logger.info("Kicked %s (ID=%s) | reason=%r | guild=%r", member, member.id, reason, guild.name)
             return f"Kicked **{member.display_name}**. Reason: {reason}"
 
         if action == "ban_member":
-            member_name = params.get("member_name", "").lower()
+            raw = params.get("member_name", "")
             reason = params.get("reason") or f"Banned by {ctx.author}"
-            member = discord.utils.find(
-                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
-                guild.members,
-            )
+            member = resolve_member(guild, raw)
             if not member:
-                return f"Member `{member_name}` not found."
+                logger.warning("ban_member: member %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _member_not_found(guild, raw)
             await member.ban(reason=reason)
             logger.info("Banned %s (ID=%s) | reason=%r | guild=%r", member, member.id, reason, guild.name)
             return f"Banned **{member.display_name}**. Reason: {reason}"
 
         if action == "set_slowmode":
-            channel_name = params.get("channel_name", "")
+            raw = params.get("channel_name", "")
             seconds = max(0, min(int(params.get("seconds", 0)), 21600))
-            channel = discord.utils.get(guild.text_channels, name=channel_name)
+            channel = resolve_text_channel(guild, raw)
             if not channel:
-                return f"Channel `#{channel_name}` not found."
+                logger.warning("set_slowmode: channel %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _channel_not_found(guild, raw)
             await channel.edit(slowmode_delay=seconds)
-            msg = f"Slowmode on `#{channel_name}` set to {seconds}s." if seconds else f"Slowmode disabled on `#{channel_name}`."
-            logger.info("set_slowmode | channel=#%s seconds=%d | guild=%r", channel_name, seconds, guild.name)
+            msg = f"Slowmode on `#{channel.name}` set to {seconds}s." if seconds else f"Slowmode disabled on `#{channel.name}`."
+            logger.info("set_slowmode | channel=#%s seconds=%d | guild=%r", channel.name, seconds, guild.name)
             return msg
 
         if action == "lock_channel":
-            channel_name = params.get("channel_name", "")
-            channel = discord.utils.get(guild.text_channels, name=channel_name)
+            raw = params.get("channel_name", "")
+            channel = resolve_text_channel(guild, raw)
             if not channel:
-                return f"Channel `#{channel_name}` not found."
+                logger.warning("lock_channel: channel %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _channel_not_found(guild, raw)
             await channel.set_permissions(guild.default_role, send_messages=False)
-            logger.info("lock_channel | channel=#%s | guild=%r", channel_name, guild.name)
-            return f"🔒 `#{channel_name}` is now locked — @everyone cannot send messages."
+            logger.info("lock_channel | channel=#%s | guild=%r", channel.name, guild.name)
+            return f"🔒 `#{channel.name}` is now locked — @everyone cannot send messages."
 
         if action == "unlock_channel":
-            channel_name = params.get("channel_name", "")
-            channel = discord.utils.get(guild.text_channels, name=channel_name)
+            raw = params.get("channel_name", "")
+            channel = resolve_text_channel(guild, raw)
             if not channel:
-                return f"Channel `#{channel_name}` not found."
+                logger.warning("unlock_channel: channel %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _channel_not_found(guild, raw)
             await channel.set_permissions(guild.default_role, send_messages=None)
-            logger.info("unlock_channel | channel=#%s | guild=%r", channel_name, guild.name)
-            return f"🔓 `#{channel_name}` is now unlocked — @everyone permissions restored."
+            logger.info("unlock_channel | channel=#%s | guild=%r", channel.name, guild.name)
+            return f"🔓 `#{channel.name}` is now unlocked — @everyone permissions restored."
 
         if action == "rename_channel":
-            channel_name = params.get("channel_name", "")
+            raw = params.get("channel_name", "")
             new_name = params.get("new_name", "")
             if not new_name:
                 return "No new name provided."
-            channel = discord.utils.get(guild.text_channels, name=channel_name)
+            channel = resolve_text_channel(guild, raw)
             if not channel:
-                return f"Channel `#{channel_name}` not found."
+                logger.warning("rename_channel: channel %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _channel_not_found(guild, raw)
+            old_name = channel.name
             await channel.edit(name=new_name)
-            logger.info("rename_channel | #%s → #%s | guild=%r", channel_name, new_name, guild.name)
-            return f"Renamed `#{channel_name}` → `#{new_name}`."
+            logger.info("rename_channel | #%s → #%s | guild=%r", old_name, new_name, guild.name)
+            return f"Renamed `#{old_name}` → `#{new_name}`."
 
         if action == "set_channel_topic":
-            channel_name = params.get("channel_name", "")
+            raw = params.get("channel_name", "")
             topic = params.get("topic", "")
-            channel = discord.utils.get(guild.text_channels, name=channel_name)
+            channel = resolve_text_channel(guild, raw)
             if not channel:
-                return f"Channel `#{channel_name}` not found."
+                logger.warning("set_channel_topic: channel %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _channel_not_found(guild, raw)
             await channel.edit(topic=topic)
-            logger.info("set_channel_topic | channel=#%s | guild=%r", channel_name, guild.name)
-            return f"Topic updated for `#{channel_name}`."
+            logger.info("set_channel_topic | channel=#%s | guild=%r", channel.name, guild.name)
+            return f"Topic updated for `#{channel.name}`."
 
         if action == "delete_user_messages":
-            member_name = params.get("member_name", "").lower()
-            channel_name = params.get("channel_name", "").strip().lstrip("#")
-            scan_limit = max(1, min(int(params.get("scan_limit", 500)), 1000))
+            raw_member = params.get("member_name", "")
+            raw_channel = params.get("channel_name", "").strip().lstrip("#")
+            scan_limit = params.get("scan_limit")
+            limit = None if not scan_limit or str(scan_limit).strip() in ("", "0", "all", "none") else max(1, min(int(scan_limit), 1000))
 
-            member = discord.utils.find(
-                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
-                guild.members,
-            )
+            member = resolve_member(guild, raw_member)
             if not member:
-                return f"Member `{member_name}` not found."
+                logger.warning("delete_user_messages: member %r not found | guild=%r (ID=%s)", raw_member, guild.name, guild.id)
+                return _member_not_found(guild, raw_member)
 
-            channels = (
-                [discord.utils.get(guild.text_channels, name=channel_name)]
-                if channel_name
-                else list(guild.text_channels)
-            )
-            channels = [c for c in channels if c is not None]
-            if not channels:
-                return f"Channel `#{channel_name}` not found."
+            if raw_channel:
+                resolved_ch = resolve_text_channel(guild, raw_channel)
+                if not resolved_ch:
+                    return _channel_not_found(guild, raw_channel)
+                channels = [resolved_ch]
+            else:
+                channels = list(guild.text_channels)
 
             total_deleted = 0
             for ch in channels:
                 try:
                     deleted = await ch.purge(
-                        limit=scan_limit,
+                        limit=limit,
                         check=lambda m, uid=member.id: m.author.id == uid,
                     )
                     total_deleted += len(deleted)
                 except discord.Forbidden:
                     logger.warning("No permission to purge #%s (ID=%s)", ch.name, ch.id)
 
-            scope = f"`#{channel_name}`" if channel_name else "all channels"
+            scope = f"`#{channels[0].name}`" if raw_channel else "all channels"
             logger.info(
                 "delete_user_messages | member=%s (ID=%s) scope=%s deleted=%d | guild=%r",
                 member, member.id, scope, total_deleted, guild.name,
@@ -419,74 +595,65 @@ class NaturalLanguage(commands.Cog):
         # ── Member management ──────────────────────────────────────────────────
 
         if action == "rename_member":
-            member_name = params.get("member_name", "").lower()
+            raw = params.get("member_name", "")
             nickname = params.get("nickname", "")
-            member = discord.utils.find(
-                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
-                guild.members,
-            )
+            member = resolve_member(guild, raw)
             if not member:
-                return f"Member `{member_name}` not found."
+                logger.warning("rename_member: member %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _member_not_found(guild, raw)
             await member.edit(nick=nickname)
             logger.info("rename_member | %s → %r | guild=%r", member, nickname, guild.name)
             return f"Renamed **{member.name}** → **{nickname}**."
 
         if action == "clear_nickname":
-            member_name = params.get("member_name", "").lower()
-            member = discord.utils.find(
-                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
-                guild.members,
-            )
+            raw = params.get("member_name", "")
+            member = resolve_member(guild, raw)
             if not member:
-                return f"Member `{member_name}` not found."
+                logger.warning("clear_nickname: member %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _member_not_found(guild, raw)
             await member.edit(nick=None)
             logger.info("clear_nickname | %s | guild=%r", member, guild.name)
             return f"Cleared nickname for **{member.name}** — now shows as their username."
 
         if action == "timeout_member":
-            member_name = params.get("member_name", "").lower()
+            raw = params.get("member_name", "")
             minutes = max(1, min(int(params.get("duration_minutes", 60)), 40320))
             reason = params.get("reason") or f"Timed out by {ctx.author}"
-            member = discord.utils.find(
-                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
-                guild.members,
-            )
+            member = resolve_member(guild, raw)
             if not member:
-                return f"Member `{member_name}` not found."
+                logger.warning("timeout_member: member %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _member_not_found(guild, raw)
             until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
             await member.timeout(until, reason=reason)
             logger.info("timeout_member | %s (ID=%s) minutes=%d | guild=%r", member, member.id, minutes, guild.name)
             return f"⏱️ **{member.display_name}** timed out for {minutes} minute(s). Reason: {reason}"
 
         if action == "remove_timeout":
-            member_name = params.get("member_name", "").lower()
-            member = discord.utils.find(
-                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
-                guild.members,
-            )
+            raw = params.get("member_name", "")
+            member = resolve_member(guild, raw)
             if not member:
-                return f"Member `{member_name}` not found."
+                logger.warning("remove_timeout: member %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _member_not_found(guild, raw)
             await member.timeout(None)
             logger.info("remove_timeout | %s (ID=%s) | guild=%r", member, member.id, guild.name)
             return f"Timeout removed from **{member.display_name}**."
 
         if action == "unban_member":
-            member_name = params.get("member_name", "").lower()
-            async for ban_entry in guild.bans():
-                if ban_entry.user.name.lower() == member_name:
-                    await guild.unban(ban_entry.user)
-                    logger.info("unban_member | %s (ID=%s) | guild=%r", ban_entry.user, ban_entry.user.id, guild.name)
-                    return f"Unbanned **{ban_entry.user.name}**."
-            return f"No banned member named `{member_name}` found."
+            raw = params.get("member_name", "")
+            entry = await resolve_ban(guild, raw)
+            if not entry:
+                logger.warning("unban_member: no ban found for %r | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return f"No banned member matching `{raw}` found."
+            await guild.unban(entry.user)
+            logger.info("unban_member | %s (ID=%s) | guild=%r", entry.user, entry.user.id, guild.name)
+            return f"Unbanned **{entry.user.name}**."
 
         if action == "member_info":
-            member_name = params.get("member_name", "").lower()
-            member = discord.utils.find(
-                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
-                guild.members,
-            )
+            raw = params.get("member_name", "")
+            member = resolve_member(guild, raw)
             if not member:
-                return f"Member `{member_name}` not found."
+                logger.warning("member_info: member %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _member_not_found(guild, raw)
             now = datetime.datetime.now(datetime.timezone.utc)
             joined_days = (now - member.joined_at).days if member.joined_at else "?"
             account_days = (now - member.created_at).days
@@ -523,31 +690,29 @@ class NaturalLanguage(commands.Cog):
             return f"**{len(new_accounts)} members with accounts under {days}d old:**\n" + "\n".join(lines) + overflow
 
         if action == "move_to_voice":
-            member_name = params.get("member_name", "").lower()
-            vc_name = params.get("voice_channel_name", "")
-            member = discord.utils.find(
-                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
-                guild.members,
-            )
+            raw_member = params.get("member_name", "")
+            raw_vc = params.get("voice_channel_name", "")
+            member = resolve_member(guild, raw_member)
             if not member:
-                return f"Member `{member_name}` not found."
+                logger.warning("move_to_voice: member %r not found | guild=%r (ID=%s)", raw_member, guild.name, guild.id)
+                return _member_not_found(guild, raw_member)
             if not member.voice:
                 return f"**{member.display_name}** is not in a voice channel."
-            vc = discord.utils.get(guild.voice_channels, name=vc_name)
+            vc = resolve_voice_channel(guild, raw_vc)
             if not vc:
-                return f"Voice channel `{vc_name}` not found."
+                logger.warning("move_to_voice: voice channel %r not found | guild=%r (ID=%s)", raw_vc, guild.name, guild.id)
+                sample = ", ".join(v.name for v in guild.voice_channels[:8])
+                return f"Voice channel `{raw_vc}` not found. Available: {sample}"
             await member.move_to(vc)
-            logger.info("move_to_voice | %s → %r | guild=%r", member, vc_name, guild.name)
-            return f"Moved **{member.display_name}** to **{vc_name}**."
+            logger.info("move_to_voice | %s → %r | guild=%r", member, vc.name, guild.name)
+            return f"Moved **{member.display_name}** to **{vc.name}**."
 
         if action == "disconnect_from_voice":
-            member_name = params.get("member_name", "").lower()
-            member = discord.utils.find(
-                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
-                guild.members,
-            )
+            raw = params.get("member_name", "")
+            member = resolve_member(guild, raw)
             if not member:
-                return f"Member `{member_name}` not found."
+                logger.warning("disconnect_from_voice: member %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _member_not_found(guild, raw)
             if not member.voice:
                 return f"**{member.display_name}** is not in a voice channel."
             await member.move_to(None)
@@ -557,36 +722,34 @@ class NaturalLanguage(commands.Cog):
         # ── Role management ────────────────────────────────────────────────────
 
         if action == "assign_role":
-            member_name = params.get("member_name", "").lower()
-            role_name = params.get("role_name", "")
-            member = discord.utils.find(
-                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
-                guild.members,
-            )
+            raw_member = params.get("member_name", "")
+            raw_role = params.get("role_name", "")
+            member = resolve_member(guild, raw_member)
             if not member:
-                return f"Member `{member_name}` not found."
-            role = discord.utils.get(guild.roles, name=role_name)
+                logger.warning("assign_role: member %r not found | guild=%r (ID=%s)", raw_member, guild.name, guild.id)
+                return _member_not_found(guild, raw_member)
+            role = resolve_role(guild, raw_role)
             if not role:
-                return f"Role `{role_name}` not found."
+                logger.warning("assign_role: role %r not found | guild=%r (ID=%s)", raw_role, guild.name, guild.id)
+                return _role_not_found(guild, raw_role)
             await member.add_roles(role)
-            logger.info("assign_role | %s → role=%r | guild=%r", member, role_name, guild.name)
-            return f"Assigned **{role_name}** to **{member.display_name}**."
+            logger.info("assign_role | %s → role=%r | guild=%r", member, role.name, guild.name)
+            return f"Assigned **{role.name}** to **{member.display_name}**."
 
         if action == "remove_role":
-            member_name = params.get("member_name", "").lower()
-            role_name = params.get("role_name", "")
-            member = discord.utils.find(
-                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
-                guild.members,
-            )
+            raw_member = params.get("member_name", "")
+            raw_role = params.get("role_name", "")
+            member = resolve_member(guild, raw_member)
             if not member:
-                return f"Member `{member_name}` not found."
-            role = discord.utils.get(guild.roles, name=role_name)
+                logger.warning("remove_role: member %r not found | guild=%r (ID=%s)", raw_member, guild.name, guild.id)
+                return _member_not_found(guild, raw_member)
+            role = resolve_role(guild, raw_role)
             if not role:
-                return f"Role `{role_name}` not found."
+                logger.warning("remove_role: role %r not found | guild=%r (ID=%s)", raw_role, guild.name, guild.id)
+                return _role_not_found(guild, raw_role)
             await member.remove_roles(role)
-            logger.info("remove_role | %s role=%r | guild=%r", member, role_name, guild.name)
-            return f"Removed **{role_name}** from **{member.display_name}**."
+            logger.info("remove_role | %s role=%r | guild=%r", member, role.name, guild.name)
+            return f"Removed **{role.name}** from **{member.display_name}**."
 
         if action == "create_role":
             role_name = params.get("role_name", "")
@@ -597,25 +760,28 @@ class NaturalLanguage(commands.Cog):
             return f"Created role **{role.name}**."
 
         if action == "delete_role":
-            role_name = params.get("role_name", "")
-            role = discord.utils.get(guild.roles, name=role_name)
+            raw = params.get("role_name", "")
+            role = resolve_role(guild, raw)
             if not role:
-                return f"Role `{role_name}` not found."
+                logger.warning("delete_role: role %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _role_not_found(guild, raw)
             await role.delete()
-            logger.info("delete_role | role=%r | guild=%r", role_name, guild.name)
-            return f"Deleted role **{role_name}**."
+            logger.info("delete_role | role=%r | guild=%r", role.name, guild.name)
+            return f"Deleted role **{role.name}**."
 
         if action == "rename_role":
-            role_name = params.get("role_name", "")
+            raw = params.get("role_name", "")
             new_name = params.get("new_name", "")
             if not new_name:
                 return "No new name provided."
-            role = discord.utils.get(guild.roles, name=role_name)
+            role = resolve_role(guild, raw)
             if not role:
-                return f"Role `{role_name}` not found."
+                logger.warning("rename_role: role %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _role_not_found(guild, raw)
+            old_name = role.name
             await role.edit(name=new_name)
-            logger.info("rename_role | %r → %r | guild=%r", role_name, new_name, guild.name)
-            return f"Renamed role **{role_name}** → **{new_name}**."
+            logger.info("rename_role | %r → %r | guild=%r", old_name, new_name, guild.name)
+            return f"Renamed role **{old_name}** → **{new_name}**."
 
         if action == "list_roles":
             roles = sorted([r for r in guild.roles if not r.is_default()], key=lambda r: -r.position)
@@ -629,18 +795,18 @@ class NaturalLanguage(commands.Cog):
 
         if action == "create_channel":
             channel_name = params.get("channel_name", "")
-            category_name = params.get("category_name", "").strip()
-            category = discord.utils.get(guild.categories, name=category_name) if category_name else None
+            raw_cat = params.get("category_name", "").strip()
+            category = resolve_category(guild, raw_cat) if raw_cat else None
             ch = await guild.create_text_channel(channel_name, category=category)
-            logger.info("create_channel | #%s category=%r | guild=%r", channel_name, category_name, guild.name)
+            logger.info("create_channel | #%s category=%r | guild=%r", channel_name, raw_cat or None, guild.name)
             return f"Created {ch.mention}."
 
         if action == "create_voice_channel":
             channel_name = params.get("channel_name", "")
-            category_name = params.get("category_name", "").strip()
-            category = discord.utils.get(guild.categories, name=category_name) if category_name else None
+            raw_cat = params.get("category_name", "").strip()
+            category = resolve_category(guild, raw_cat) if raw_cat else None
             ch = await guild.create_voice_channel(channel_name, category=category)
-            logger.info("create_voice_channel | %r category=%r | guild=%r", channel_name, category_name, guild.name)
+            logger.info("create_voice_channel | %r category=%r | guild=%r", channel_name, raw_cat or None, guild.name)
             return f"Created voice channel **{ch.name}**."
 
         if action == "create_category":
@@ -650,37 +816,42 @@ class NaturalLanguage(commands.Cog):
             return f"Created category **{cat.name}**."
 
         if action == "delete_channel":
-            channel_name = params.get("channel_name", "")
-            channel = discord.utils.get(guild.channels, name=channel_name)
+            raw = params.get("channel_name", "")
+            channel = resolve_any_channel(guild, raw)
             if not channel:
-                return f"Channel `#{channel_name}` not found."
+                logger.warning("delete_channel: channel %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _channel_not_found(guild, raw)
+            name = channel.name
             await channel.delete()
-            logger.info("delete_channel | #%s | guild=%r", channel_name, guild.name)
-            return f"Deleted channel **#{channel_name}**."
+            logger.info("delete_channel | #%s | guild=%r", name, guild.name)
+            return f"Deleted channel **#{name}**."
 
         if action == "move_channel":
-            channel_name = params.get("channel_name", "")
-            category_name = params.get("category_name", "")
-            channel = discord.utils.get(guild.channels, name=channel_name)
+            raw_ch = params.get("channel_name", "")
+            raw_cat = params.get("category_name", "")
+            channel = resolve_any_channel(guild, raw_ch)
             if not channel:
-                return f"Channel `#{channel_name}` not found."
-            category = discord.utils.get(guild.categories, name=category_name)
+                logger.warning("move_channel: channel %r not found | guild=%r (ID=%s)", raw_ch, guild.name, guild.id)
+                return _channel_not_found(guild, raw_ch)
+            category = resolve_category(guild, raw_cat)
             if not category:
-                return f"Category `{category_name}` not found."
+                logger.warning("move_channel: category %r not found | guild=%r (ID=%s)", raw_cat, guild.name, guild.id)
+                return _category_not_found(guild, raw_cat)
             await channel.edit(category=category)
-            logger.info("move_channel | #%s → category=%r | guild=%r", channel_name, category_name, guild.name)
-            return f"Moved **#{channel_name}** to **{category_name}**."
+            logger.info("move_channel | #%s → category=%r | guild=%r", channel.name, category.name, guild.name)
+            return f"Moved **#{channel.name}** to **{category.name}**."
 
         if action == "set_channel_nsfw":
-            channel_name = params.get("channel_name", "")
+            raw = params.get("channel_name", "")
             enabled = str(params.get("enabled", "true")).lower() != "false"
-            channel = discord.utils.get(guild.text_channels, name=channel_name)
+            channel = resolve_text_channel(guild, raw)
             if not channel:
-                return f"Channel `#{channel_name}` not found."
+                logger.warning("set_channel_nsfw: channel %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
+                return _channel_not_found(guild, raw)
             await channel.edit(nsfw=enabled)
             state = "marked as NSFW 🔞" if enabled else "unmarked as NSFW"
-            logger.info("set_channel_nsfw | #%s enabled=%s | guild=%r", channel_name, enabled, guild.name)
-            return f"`#{channel_name}` {state}."
+            logger.info("set_channel_nsfw | #%s enabled=%s | guild=%r", channel.name, enabled, guild.name)
+            return f"`#{channel.name}` {state}."
 
         if action == "slowmode_all_channels":
             seconds = max(0, min(int(params.get("seconds", 0)), 21600))

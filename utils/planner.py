@@ -12,8 +12,8 @@ _client = None
 ACTIONS = [
     {
         "name": "bulk_delete",
-        "description": "Delete the last N messages from a text channel (max 100 per call)",
-        "parameters": {"channel_name": "Channel name without #", "count": "Number of messages (1-100)"},
+        "description": "Delete messages from a text channel. Can delete a specific number or all messages.",
+        "parameters": {"channel_name": "Channel name, mention, or ID", "count": "Number of messages to delete, or \"all\" to delete everything"},
         "is_destructive": True,
     },
     {
