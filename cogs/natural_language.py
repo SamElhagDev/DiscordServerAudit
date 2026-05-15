@@ -362,13 +362,25 @@ class NaturalLanguage(commands.Cog):
             if not channel:
                 logger.warning("bulk_delete: channel %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
                 return f"Channel `#{raw}` not found. Available: {', '.join('#' + c.name for c in guild.text_channels[:10])}"
-            logger.info(
-                "Executing bulk_delete | channel=#%s (ID=%s) count=%s | guild=%r (ID=%s)",
-                channel.name, channel.id, count if count is not None else "all", guild.name, guild.id,
-            )
-            deleted = await channel.purge(limit=count)
-            count_str = str(len(deleted)) if count is None else f"{len(deleted)}/{count}"
-            return f"Deleted {count_str} messages from `#{channel.name}`."
+            if count is None:
+                # Recreate the channel — preserves all settings in 2 API calls instead of
+                # thousands of individual deletes (required for messages older than 14 days).
+                logger.info(
+                    "Executing bulk_delete (recreate) | channel=#%s (ID=%s) | guild=%r (ID=%s)",
+                    channel.name, channel.id, guild.name, guild.id,
+                )
+                position = channel.position
+                clone = await channel.clone(reason=f"Bulk delete requested by {ctx.author}")
+                await clone.edit(position=position)
+                await channel.delete(reason=f"Bulk delete requested by {ctx.author}")
+                return f"Cleared `#{clone.name}` (channel recreated — all messages removed)."
+            else:
+                logger.info(
+                    "Executing bulk_delete | channel=#%s (ID=%s) count=%d | guild=%r (ID=%s)",
+                    channel.name, channel.id, count, guild.name, guild.id,
+                )
+                deleted = await channel.purge(limit=count)
+                return f"Deleted {len(deleted)}/{count} messages from `#{channel.name}`."
 
         if action == "prune_members":
             days = max(1, min(int(params.get("days", 7)), 30))

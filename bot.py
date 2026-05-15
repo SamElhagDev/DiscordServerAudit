@@ -176,7 +176,7 @@ class AdminBot(commands.Bot):
             await cog.post_audit_results(guild, findings)
 
     async def on_command_error(self, ctx: commands.Context, error):
-        if isinstance(error, commands.CheckFailure):
+        if isinstance(error, (commands.CheckFailure, commands.CommandNotFound)):
             return
         if isinstance(error, commands.MissingRequiredArgument):
             logger.warning(
