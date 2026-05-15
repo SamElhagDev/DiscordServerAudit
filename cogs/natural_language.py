@@ -12,6 +12,8 @@ from utils.planner import build_plan
 logger = logging.getLogger(__name__)
 
 _BULK_DELAY = 0.5  # seconds between individual API calls in bulk loops
+_OLD_MSG_DELAY = 1.1  # seconds between individual deletes of messages >14 days old
+_BULK_DELETE_DELAY = 1.0  # seconds between bulk-delete batches
 
 
 async def _api(coro_factory, retries: int = 3):
@@ -26,6 +28,56 @@ async def _api(coro_factory, retries: int = 3):
                 await asyncio.sleep(wait)
             else:
                 raise
+
+
+async def _purge_messages(
+    channel: discord.TextChannel,
+    *,
+    limit: int | None = None,
+    check=None,
+) -> int:
+    """
+    Delete messages from a channel in a rate-limit-safe way.
+
+    Recent messages (≤14 days): collected and bulk-deleted in batches of up to 100.
+    Old messages (>14 days): individually deleted with a delay between each.
+
+    Returns the count of deleted messages.
+    """
+    cutoff = discord.utils.utcnow() - datetime.timedelta(days=14)
+    recent: list[discord.Message] = []
+    old: list[discord.Message] = []
+
+    async for msg in channel.history(limit=limit, oldest_first=False):
+        if check and not check(msg):
+            continue
+        if msg.created_at > cutoff:
+            recent.append(msg)
+        else:
+            old.append(msg)
+
+    deleted = 0
+
+    for i in range(0, len(recent), 100):
+        batch = recent[i:i + 100]
+        if len(batch) == 1:
+            await _api(batch[0].delete)
+        else:
+            await _api(lambda b=batch: channel.delete_messages(b))
+        deleted += len(batch)
+        if i + 100 < len(recent):
+            await asyncio.sleep(_BULK_DELETE_DELAY)
+
+    for msg in old:
+        await _api(msg.delete)
+        deleted += 1
+        await asyncio.sleep(_OLD_MSG_DELAY)
+
+    logger.debug(
+        "_purge_messages | channel=#%s recent=%d old=%d deleted=%d",
+        channel.name, len(recent), len(old), deleted,
+    )
+    return deleted
 
 
 # ---------------------------------------------------------------------------
@@ -379,8 +431,8 @@ class NaturalLanguage(commands.Cog):
                     "Executing bulk_delete | channel=#%s (ID=%s) count=%d | guild=%r (ID=%s)",
                     channel.name, channel.id, count, guild.name, guild.id,
                 )
-                deleted = await channel.purge(limit=count)
-                return f"Deleted {len(deleted)}/{count} messages from `#{channel.name}`."
+                deleted = await _purge_messages(channel, limit=count)
+                return f"Deleted {deleted}/{count} messages from `#{channel.name}`."
 
         if action == "prune_members":
             days = max(1, min(int(params.get("days", 7)), 30))
@@ -610,11 +662,11 @@ class NaturalLanguage(commands.Cog):
             total_deleted = 0
             for ch in channels:
                 try:
-                    deleted = await ch.purge(
+                    total_deleted += await _purge_messages(
+                        ch,
                         limit=limit,
                         check=lambda m, uid=member.id: m.author.id == uid,
                     )
-                    total_deleted += len(deleted)
                 except discord.Forbidden:
                     logger.warning("No permission to purge #%s (ID=%s)", ch.name, ch.id)
 
