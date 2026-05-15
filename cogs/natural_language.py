@@ -44,8 +44,10 @@ async def _purge_messages(
     """
     Delete messages from a channel in a rate-limit-safe way.
 
-    Recent messages (≤14 days): collected and bulk-deleted in batches of up to 100.
-    Old messages (>14 days): individually deleted with a delay between each.
+    Paginates history manually (0.5s between pages) to avoid bursting the GET
+    endpoint, then:
+    - Recent messages (≤14 days): bulk-deleted in batches of up to 100
+    - Old messages (>14 days): individually deleted with _OLD_MSG_DELAY spacing
 
     Returns the count of deleted messages.
     """
@@ -53,25 +55,41 @@ async def _purge_messages(
     recent: list[discord.Message] = []
     old: list[discord.Message] = []
 
-    for attempt in range(3):
-        recent.clear()
-        old.clear()
-        try:
-            async for msg in channel.history(limit=limit, oldest_first=False):
-                if check and not check(msg):
-                    continue
-                if msg.created_at > cutoff:
-                    recent.append(msg)
+    fetched = 0
+    before = None
+    while True:
+        page_size = min(100, limit - fetched) if limit is not None else 100
+        page: list[discord.Message] = []
+        for attempt in range(3):
+            try:
+                page = [m async for m in channel.history(limit=page_size, before=before, oldest_first=False)]
+                break
+            except discord.HTTPException as exc:
+                if exc.status >= 500 and attempt < 2:
+                    wait = 2 ** attempt
+                    logger.warning("Discord %d fetching history #%s — retry in %ds", exc.status, channel.name, wait)
+                    await asyncio.sleep(wait)
                 else:
-                    old.append(msg)
+                    raise
+
+        if not page:
             break
-        except discord.HTTPException as exc:
-            if exc.status >= 500 and attempt < 2:
-                wait = 2 ** attempt
-                logger.warning("Discord %d fetching history for #%s — retrying in %ds", exc.status, channel.name, wait)
-                await asyncio.sleep(wait)
+
+        for msg in page:
+            if check and not check(msg):
+                continue
+            if msg.created_at > cutoff:
+                recent.append(msg)
             else:
-                raise
+                old.append(msg)
+
+        fetched += len(page)
+        before = page[-1]
+
+        if len(page) < page_size or (limit is not None and fetched >= limit):
+            break
+
+        await asyncio.sleep(0.5)  # pace history GET requests
 
     deleted = 0
 
@@ -82,8 +100,7 @@ async def _purge_messages(
         else:
             await _api(lambda b=batch: channel.delete_messages(b))
         deleted += len(batch)
-        if i + 100 < len(recent):
-            await asyncio.sleep(_BULK_DELETE_DELAY)
+        await asyncio.sleep(_BULK_DELETE_DELAY)
 
     for msg in old:
         await _api(msg.delete)
@@ -677,7 +694,7 @@ class NaturalLanguage(commands.Cog):
                 channels = list(guild.text_channels)
 
             total_deleted = 0
-            for ch in channels:
+            for i, ch in enumerate(channels):
                 try:
                     total_deleted += await _purge_messages(
                         ch,
@@ -686,6 +703,8 @@ class NaturalLanguage(commands.Cog):
                     )
                 except discord.Forbidden:
                     logger.warning("No permission to purge #%s (ID=%s)", ch.name, ch.id)
+                if i < len(channels) - 1:
+                    await asyncio.sleep(1.0)  # pace between channels
 
             scope = f"`#{channels[0].name}`" if raw_channel else "all channels"
             logger.info(
