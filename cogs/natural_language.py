@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import logging
 import re
@@ -9,6 +10,22 @@ from utils.permissions import has_admin_role, build_embed
 from utils.planner import build_plan
 
 logger = logging.getLogger(__name__)
+
+_BULK_DELAY = 0.5  # seconds between individual API calls in bulk loops
+
+
+async def _api(coro_factory, retries: int = 3):
+    """Call coro_factory(), retrying up to `retries` times on a 429 rate-limit response."""
+    for attempt in range(retries):
+        try:
+            return await coro_factory()
+        except discord.HTTPException as exc:
+            if exc.status == 429 and attempt < retries - 1:
+                wait = getattr(exc, "retry_after", 1.0) or 1.0
+                logger.warning("Rate limited — waiting %.2fs before retry (attempt %d/%d)", wait, attempt + 1, retries)
+                await asyncio.sleep(wait)
+            else:
+                raise
 
 
 # ---------------------------------------------------------------------------
@@ -369,8 +386,9 @@ class NaturalLanguage(commands.Cog):
             logger.info("Executing bulk_role_add | role=%r (ID=%s) | guild=%r (ID=%s)", role.name, role.id, guild.name, guild.id)
             for member in guild.members:
                 if role not in member.roles:
-                    await member.add_roles(role)
+                    await _api(lambda m=member: m.add_roles(role))
                     count += 1
+                    await asyncio.sleep(_BULK_DELAY)
             return f"Added `{role.name}` to {count} members."
 
         if action == "bulk_role_remove":
@@ -383,8 +401,9 @@ class NaturalLanguage(commands.Cog):
             logger.info("Executing bulk_role_remove | role=%r (ID=%s) | guild=%r (ID=%s)", role.name, role.id, guild.name, guild.id)
             for member in guild.members:
                 if role in member.roles:
-                    await member.remove_roles(role)
+                    await _api(lambda m=member: m.remove_roles(role))
                     count += 1
+                    await asyncio.sleep(_BULK_DELAY)
             return f"Removed `{role.name}` from {count} members."
 
         if action == "bulk_create_channels":
@@ -398,7 +417,8 @@ class NaturalLanguage(commands.Cog):
                 logger.info("Created category %r | guild=%r (ID=%s)", raw_cat, guild.name, guild.id)
             logger.info("Executing bulk_create_channels | category=%r (ID=%s) names=%s | guild=%r (ID=%s)", category.name, category.id, names, guild.name, guild.id)
             for name in names:
-                await guild.create_text_channel(name, category=category)
+                await _api(lambda n=name: guild.create_text_channel(n, category=category))
+                await asyncio.sleep(_BULK_DELAY)
             return f"Created {len(names)} channels in `{category.name}`."
 
         if action == "bulk_delete_channels":
@@ -410,7 +430,8 @@ class NaturalLanguage(commands.Cog):
             count = len(category.channels)
             logger.info("Executing bulk_delete_channels | category=%r (ID=%s) channels=%d | guild=%r (ID=%s)", category.name, category.id, count, guild.name, guild.id)
             for ch in list(category.channels):
-                await ch.delete()
+                await _api(ch.delete)
+                await asyncio.sleep(_BULK_DELAY)
             return f"Deleted {count} channels from `{category.name}`."
 
         if action == "security_audit":
@@ -858,8 +879,9 @@ class NaturalLanguage(commands.Cog):
             count = 0
             for ch in guild.text_channels:
                 try:
-                    await ch.edit(slowmode_delay=seconds)
+                    await _api(lambda c=ch: c.edit(slowmode_delay=seconds))
                     count += 1
+                    await asyncio.sleep(_BULK_DELAY)
                 except discord.Forbidden:
                     pass
             msg = f"Set slowmode to {seconds}s" if seconds else "Disabled slowmode"
@@ -906,8 +928,9 @@ class NaturalLanguage(commands.Cog):
             count = 0
             for member in targets:
                 try:
-                    await member.timeout(until, reason="Mass timeout — raid containment")
+                    await _api(lambda m=member: m.timeout(until, reason="Mass timeout — raid containment"))
                     count += 1
+                    await asyncio.sleep(_BULK_DELAY)
                 except discord.Forbidden:
                     pass
             logger.info("mass_timeout | targets=%d timed_out=%d minutes=%d | guild=%r", len(targets), count, minutes, guild.name)
