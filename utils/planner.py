@@ -131,6 +131,176 @@ ACTIONS = [
         },
         "is_destructive": True,
     },
+    # ── Member management ──────────────────────────────────────────────────────
+    {
+        "name": "rename_member",
+        "description": "Change a member's server nickname (display name within this server only)",
+        "parameters": {"member_name": "Current username or display name", "nickname": "New nickname to set"},
+        "is_destructive": False,
+    },
+    {
+        "name": "clear_nickname",
+        "description": "Reset a member's server nickname back to their default Discord username",
+        "parameters": {"member_name": "Username or display name"},
+        "is_destructive": False,
+    },
+    {
+        "name": "timeout_member",
+        "description": "Temporarily mute/timeout a member so they cannot send messages, react, or join voice for N minutes",
+        "parameters": {
+            "member_name": "Username or display name",
+            "duration_minutes": "How long to timeout in minutes (max 40320 = 28 days)",
+            "reason": "Optional reason",
+        },
+        "is_destructive": True,
+    },
+    {
+        "name": "remove_timeout",
+        "description": "Remove an active timeout from a member, restoring their ability to interact",
+        "parameters": {"member_name": "Username or display name"},
+        "is_destructive": False,
+    },
+    {
+        "name": "unban_member",
+        "description": "Unban a previously banned member so they can rejoin the server",
+        "parameters": {"member_name": "Exact username of the banned member"},
+        "is_destructive": False,
+    },
+    {
+        "name": "member_info",
+        "description": "Show detailed info about a member: join date, account age, roles, timeout status",
+        "parameters": {"member_name": "Username or display name"},
+        "is_destructive": False,
+    },
+    {
+        "name": "find_new_members",
+        "description": "List members who joined the server in the last N days (useful for monitoring growth or raids)",
+        "parameters": {"days": "How many days back to look (default 7)"},
+        "is_destructive": False,
+    },
+    {
+        "name": "find_new_accounts",
+        "description": "List members whose Discord accounts are less than N days old — useful for detecting raid bot accounts",
+        "parameters": {"days": "Maximum account age in days (default 7)"},
+        "is_destructive": False,
+    },
+    {
+        "name": "move_to_voice",
+        "description": "Move a member from their current voice channel to a different voice channel",
+        "parameters": {"member_name": "Username or display name", "voice_channel_name": "Target voice channel name"},
+        "is_destructive": False,
+    },
+    {
+        "name": "disconnect_from_voice",
+        "description": "Disconnect a member from whatever voice channel they are currently in",
+        "parameters": {"member_name": "Username or display name"},
+        "is_destructive": False,
+    },
+    # ── Role management ────────────────────────────────────────────────────────
+    {
+        "name": "assign_role",
+        "description": "Assign a specific role to a specific member",
+        "parameters": {"member_name": "Username or display name", "role_name": "Exact role name"},
+        "is_destructive": False,
+    },
+    {
+        "name": "remove_role",
+        "description": "Remove a specific role from a specific member",
+        "parameters": {"member_name": "Username or display name", "role_name": "Exact role name"},
+        "is_destructive": False,
+    },
+    {
+        "name": "create_role",
+        "description": "Create a new server role with an optional hex color",
+        "parameters": {"role_name": "Name for the new role", "color": "Hex color code e.g. #ff0000 (optional)"},
+        "is_destructive": False,
+    },
+    {
+        "name": "delete_role",
+        "description": "Permanently delete a role from the server",
+        "parameters": {"role_name": "Exact role name to delete"},
+        "is_destructive": True,
+    },
+    {
+        "name": "rename_role",
+        "description": "Rename an existing role",
+        "parameters": {"role_name": "Current role name", "new_name": "New role name"},
+        "is_destructive": False,
+    },
+    {
+        "name": "list_roles",
+        "description": "List all server roles with their member counts",
+        "parameters": {},
+        "is_destructive": False,
+    },
+    # ── Channel management ─────────────────────────────────────────────────────
+    {
+        "name": "create_channel",
+        "description": "Create a single new text channel, optionally inside a category",
+        "parameters": {"channel_name": "Channel name without #", "category_name": "Category name (optional)"},
+        "is_destructive": False,
+    },
+    {
+        "name": "create_voice_channel",
+        "description": "Create a new voice channel, optionally inside a category",
+        "parameters": {"channel_name": "Voice channel name", "category_name": "Category name (optional)"},
+        "is_destructive": False,
+    },
+    {
+        "name": "create_category",
+        "description": "Create a new channel category",
+        "parameters": {"category_name": "Name for the new category"},
+        "is_destructive": False,
+    },
+    {
+        "name": "delete_channel",
+        "description": "Delete a single text or voice channel",
+        "parameters": {"channel_name": "Channel name without #"},
+        "is_destructive": True,
+    },
+    {
+        "name": "move_channel",
+        "description": "Move a channel into a different category",
+        "parameters": {"channel_name": "Channel name without #", "category_name": "Target category name"},
+        "is_destructive": False,
+    },
+    {
+        "name": "set_channel_nsfw",
+        "description": "Mark or unmark a text channel as NSFW (age-restricted)",
+        "parameters": {"channel_name": "Channel name without #", "enabled": "true to mark NSFW, false to unmark"},
+        "is_destructive": False,
+    },
+    {
+        "name": "slowmode_all_channels",
+        "description": "Apply the same slowmode delay to every text channel in the server at once",
+        "parameters": {"seconds": "Delay in seconds (0 to disable everywhere, max 21600)"},
+        "is_destructive": False,
+    },
+    # ── Server management ──────────────────────────────────────────────────────
+    {
+        "name": "delete_invites",
+        "description": "Delete all active server invites — essential first response to a raid",
+        "parameters": {},
+        "is_destructive": True,
+    },
+    {
+        "name": "list_bans",
+        "description": "Show all currently banned members",
+        "parameters": {},
+        "is_destructive": False,
+    },
+    {
+        "name": "server_info",
+        "description": "Show a summary of server statistics: member count, channel count, role count, boost level, creation date",
+        "parameters": {},
+        "is_destructive": False,
+    },
+    {
+        "name": "mass_timeout",
+        "description": "Timeout all members who have no roles assigned — fast raid containment",
+        "parameters": {"duration_minutes": "Timeout duration in minutes (default 60)"},
+        "is_destructive": True,
+    },
 ]
 
 

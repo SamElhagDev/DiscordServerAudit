@@ -416,6 +416,332 @@ class NaturalLanguage(commands.Cog):
             )
             return f"Deleted **{total_deleted}** messages from **{member.display_name}** across {scope}."
 
+        # ── Member management ──────────────────────────────────────────────────
+
+        if action == "rename_member":
+            member_name = params.get("member_name", "").lower()
+            nickname = params.get("nickname", "")
+            member = discord.utils.find(
+                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
+                guild.members,
+            )
+            if not member:
+                return f"Member `{member_name}` not found."
+            await member.edit(nick=nickname)
+            logger.info("rename_member | %s → %r | guild=%r", member, nickname, guild.name)
+            return f"Renamed **{member.name}** → **{nickname}**."
+
+        if action == "clear_nickname":
+            member_name = params.get("member_name", "").lower()
+            member = discord.utils.find(
+                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
+                guild.members,
+            )
+            if not member:
+                return f"Member `{member_name}` not found."
+            await member.edit(nick=None)
+            logger.info("clear_nickname | %s | guild=%r", member, guild.name)
+            return f"Cleared nickname for **{member.name}** — now shows as their username."
+
+        if action == "timeout_member":
+            member_name = params.get("member_name", "").lower()
+            minutes = max(1, min(int(params.get("duration_minutes", 60)), 40320))
+            reason = params.get("reason") or f"Timed out by {ctx.author}"
+            member = discord.utils.find(
+                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
+                guild.members,
+            )
+            if not member:
+                return f"Member `{member_name}` not found."
+            until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
+            await member.timeout(until, reason=reason)
+            logger.info("timeout_member | %s (ID=%s) minutes=%d | guild=%r", member, member.id, minutes, guild.name)
+            return f"⏱️ **{member.display_name}** timed out for {minutes} minute(s). Reason: {reason}"
+
+        if action == "remove_timeout":
+            member_name = params.get("member_name", "").lower()
+            member = discord.utils.find(
+                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
+                guild.members,
+            )
+            if not member:
+                return f"Member `{member_name}` not found."
+            await member.timeout(None)
+            logger.info("remove_timeout | %s (ID=%s) | guild=%r", member, member.id, guild.name)
+            return f"Timeout removed from **{member.display_name}**."
+
+        if action == "unban_member":
+            member_name = params.get("member_name", "").lower()
+            async for ban_entry in guild.bans():
+                if ban_entry.user.name.lower() == member_name:
+                    await guild.unban(ban_entry.user)
+                    logger.info("unban_member | %s (ID=%s) | guild=%r", ban_entry.user, ban_entry.user.id, guild.name)
+                    return f"Unbanned **{ban_entry.user.name}**."
+            return f"No banned member named `{member_name}` found."
+
+        if action == "member_info":
+            member_name = params.get("member_name", "").lower()
+            member = discord.utils.find(
+                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
+                guild.members,
+            )
+            if not member:
+                return f"Member `{member_name}` not found."
+            now = datetime.datetime.now(datetime.timezone.utc)
+            joined_days = (now - member.joined_at).days if member.joined_at else "?"
+            account_days = (now - member.created_at).days
+            roles = [r.name for r in member.roles if not r.is_default()]
+            timed_out = "Yes" if member.is_timed_out() else "No"
+            return (
+                f"**{member.display_name}** (`{member.name}`)\n"
+                f"Joined server: {joined_days}d ago\n"
+                f"Account age: {account_days}d\n"
+                f"Roles: {', '.join(roles) if roles else 'None'}\n"
+                f"Timed out: {timed_out}\n"
+                f"Bot: {'Yes' if member.bot else 'No'}"
+            )
+
+        if action == "find_new_members":
+            days = int(params.get("days", 7))
+            cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+            new_members = [m for m in guild.members if m.joined_at and m.joined_at >= cutoff and not m.bot]
+            if not new_members:
+                return f"No new members in the last {days} days."
+            new_members.sort(key=lambda m: m.joined_at, reverse=True)
+            lines = [f"{m.display_name} (joined {(datetime.datetime.now(datetime.timezone.utc) - m.joined_at).days}d ago)" for m in new_members[:20]]
+            overflow = f"\n…and {len(new_members) - 20} more" if len(new_members) > 20 else ""
+            return f"**{len(new_members)} new members** (last {days}d):\n" + "\n".join(lines) + overflow
+
+        if action == "find_new_accounts":
+            days = int(params.get("days", 7))
+            cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+            new_accounts = [m for m in guild.members if m.created_at >= cutoff and not m.bot]
+            if not new_accounts:
+                return f"No members with accounts newer than {days} days."
+            lines = [f"{m.display_name} (account {(datetime.datetime.now(datetime.timezone.utc) - m.created_at).days}d old)" for m in new_accounts[:20]]
+            overflow = f"\n…and {len(new_accounts) - 20} more" if len(new_accounts) > 20 else ""
+            return f"**{len(new_accounts)} members with accounts under {days}d old:**\n" + "\n".join(lines) + overflow
+
+        if action == "move_to_voice":
+            member_name = params.get("member_name", "").lower()
+            vc_name = params.get("voice_channel_name", "")
+            member = discord.utils.find(
+                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
+                guild.members,
+            )
+            if not member:
+                return f"Member `{member_name}` not found."
+            if not member.voice:
+                return f"**{member.display_name}** is not in a voice channel."
+            vc = discord.utils.get(guild.voice_channels, name=vc_name)
+            if not vc:
+                return f"Voice channel `{vc_name}` not found."
+            await member.move_to(vc)
+            logger.info("move_to_voice | %s → %r | guild=%r", member, vc_name, guild.name)
+            return f"Moved **{member.display_name}** to **{vc_name}**."
+
+        if action == "disconnect_from_voice":
+            member_name = params.get("member_name", "").lower()
+            member = discord.utils.find(
+                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
+                guild.members,
+            )
+            if not member:
+                return f"Member `{member_name}` not found."
+            if not member.voice:
+                return f"**{member.display_name}** is not in a voice channel."
+            await member.move_to(None)
+            logger.info("disconnect_from_voice | %s | guild=%r", member, guild.name)
+            return f"Disconnected **{member.display_name}** from voice."
+
+        # ── Role management ────────────────────────────────────────────────────
+
+        if action == "assign_role":
+            member_name = params.get("member_name", "").lower()
+            role_name = params.get("role_name", "")
+            member = discord.utils.find(
+                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
+                guild.members,
+            )
+            if not member:
+                return f"Member `{member_name}` not found."
+            role = discord.utils.get(guild.roles, name=role_name)
+            if not role:
+                return f"Role `{role_name}` not found."
+            await member.add_roles(role)
+            logger.info("assign_role | %s → role=%r | guild=%r", member, role_name, guild.name)
+            return f"Assigned **{role_name}** to **{member.display_name}**."
+
+        if action == "remove_role":
+            member_name = params.get("member_name", "").lower()
+            role_name = params.get("role_name", "")
+            member = discord.utils.find(
+                lambda m: m.name.lower() == member_name or m.display_name.lower() == member_name,
+                guild.members,
+            )
+            if not member:
+                return f"Member `{member_name}` not found."
+            role = discord.utils.get(guild.roles, name=role_name)
+            if not role:
+                return f"Role `{role_name}` not found."
+            await member.remove_roles(role)
+            logger.info("remove_role | %s role=%r | guild=%r", member, role_name, guild.name)
+            return f"Removed **{role_name}** from **{member.display_name}**."
+
+        if action == "create_role":
+            role_name = params.get("role_name", "")
+            color_hex = params.get("color", "").strip().lstrip("#")
+            color = discord.Color(int(color_hex, 16)) if color_hex else discord.Color.default()
+            role = await guild.create_role(name=role_name, color=color)
+            logger.info("create_role | role=%r color=%r | guild=%r", role_name, color_hex, guild.name)
+            return f"Created role **{role.name}**."
+
+        if action == "delete_role":
+            role_name = params.get("role_name", "")
+            role = discord.utils.get(guild.roles, name=role_name)
+            if not role:
+                return f"Role `{role_name}` not found."
+            await role.delete()
+            logger.info("delete_role | role=%r | guild=%r", role_name, guild.name)
+            return f"Deleted role **{role_name}**."
+
+        if action == "rename_role":
+            role_name = params.get("role_name", "")
+            new_name = params.get("new_name", "")
+            if not new_name:
+                return "No new name provided."
+            role = discord.utils.get(guild.roles, name=role_name)
+            if not role:
+                return f"Role `{role_name}` not found."
+            await role.edit(name=new_name)
+            logger.info("rename_role | %r → %r | guild=%r", role_name, new_name, guild.name)
+            return f"Renamed role **{role_name}** → **{new_name}**."
+
+        if action == "list_roles":
+            roles = sorted([r for r in guild.roles if not r.is_default()], key=lambda r: -r.position)
+            if not roles:
+                return "No roles found."
+            lines = [f"**{r.name}** — {len(r.members)} member(s)" for r in roles[:25]]
+            overflow = f"\n…and {len(roles) - 25} more" if len(roles) > 25 else ""
+            return "\n".join(lines) + overflow
+
+        # ── Channel management ─────────────────────────────────────────────────
+
+        if action == "create_channel":
+            channel_name = params.get("channel_name", "")
+            category_name = params.get("category_name", "").strip()
+            category = discord.utils.get(guild.categories, name=category_name) if category_name else None
+            ch = await guild.create_text_channel(channel_name, category=category)
+            logger.info("create_channel | #%s category=%r | guild=%r", channel_name, category_name, guild.name)
+            return f"Created {ch.mention}."
+
+        if action == "create_voice_channel":
+            channel_name = params.get("channel_name", "")
+            category_name = params.get("category_name", "").strip()
+            category = discord.utils.get(guild.categories, name=category_name) if category_name else None
+            ch = await guild.create_voice_channel(channel_name, category=category)
+            logger.info("create_voice_channel | %r category=%r | guild=%r", channel_name, category_name, guild.name)
+            return f"Created voice channel **{ch.name}**."
+
+        if action == "create_category":
+            category_name = params.get("category_name", "")
+            cat = await guild.create_category(category_name)
+            logger.info("create_category | %r | guild=%r", category_name, guild.name)
+            return f"Created category **{cat.name}**."
+
+        if action == "delete_channel":
+            channel_name = params.get("channel_name", "")
+            channel = discord.utils.get(guild.channels, name=channel_name)
+            if not channel:
+                return f"Channel `#{channel_name}` not found."
+            await channel.delete()
+            logger.info("delete_channel | #%s | guild=%r", channel_name, guild.name)
+            return f"Deleted channel **#{channel_name}**."
+
+        if action == "move_channel":
+            channel_name = params.get("channel_name", "")
+            category_name = params.get("category_name", "")
+            channel = discord.utils.get(guild.channels, name=channel_name)
+            if not channel:
+                return f"Channel `#{channel_name}` not found."
+            category = discord.utils.get(guild.categories, name=category_name)
+            if not category:
+                return f"Category `{category_name}` not found."
+            await channel.edit(category=category)
+            logger.info("move_channel | #%s → category=%r | guild=%r", channel_name, category_name, guild.name)
+            return f"Moved **#{channel_name}** to **{category_name}**."
+
+        if action == "set_channel_nsfw":
+            channel_name = params.get("channel_name", "")
+            enabled = str(params.get("enabled", "true")).lower() != "false"
+            channel = discord.utils.get(guild.text_channels, name=channel_name)
+            if not channel:
+                return f"Channel `#{channel_name}` not found."
+            await channel.edit(nsfw=enabled)
+            state = "marked as NSFW 🔞" if enabled else "unmarked as NSFW"
+            logger.info("set_channel_nsfw | #%s enabled=%s | guild=%r", channel_name, enabled, guild.name)
+            return f"`#{channel_name}` {state}."
+
+        if action == "slowmode_all_channels":
+            seconds = max(0, min(int(params.get("seconds", 0)), 21600))
+            count = 0
+            for ch in guild.text_channels:
+                try:
+                    await ch.edit(slowmode_delay=seconds)
+                    count += 1
+                except discord.Forbidden:
+                    pass
+            msg = f"Set slowmode to {seconds}s" if seconds else "Disabled slowmode"
+            logger.info("slowmode_all_channels | seconds=%d channels=%d | guild=%r", seconds, count, guild.name)
+            return f"{msg} on {count} channels."
+
+        # ── Server management ──────────────────────────────────────────────────
+
+        if action == "delete_invites":
+            invites = await guild.invites()
+            for invite in invites:
+                await invite.delete()
+            logger.info("delete_invites | deleted=%d | guild=%r", len(invites), guild.name)
+            return f"Deleted {len(invites)} active invite(s)."
+
+        if action == "list_bans":
+            bans = [entry async for entry in guild.bans()]
+            if not bans:
+                return "No members are currently banned."
+            lines = [f"**{e.user.name}** — {e.reason or 'No reason'}" for e in bans[:20]]
+            overflow = f"\n…and {len(bans) - 20} more" if len(bans) > 20 else ""
+            return f"**{len(bans)} banned member(s):**\n" + "\n".join(lines) + overflow
+
+        if action == "server_info":
+            now = datetime.datetime.now(datetime.timezone.utc)
+            age_days = (now - guild.created_at).days
+            humans = sum(1 for m in guild.members if not m.bot)
+            bots = sum(1 for m in guild.members if m.bot)
+            return (
+                f"**{guild.name}**\n"
+                f"Owner: {guild.owner}\n"
+                f"Created: {age_days}d ago\n"
+                f"Members: {humans} humans, {bots} bots\n"
+                f"Channels: {len(guild.text_channels)} text, {len(guild.voice_channels)} voice\n"
+                f"Roles: {len(guild.roles) - 1}\n"
+                f"Boost level: {guild.premium_tier} ({guild.premium_subscription_count} boosts)\n"
+                f"Verification: {guild.verification_level}"
+            )
+
+        if action == "mass_timeout":
+            minutes = max(1, min(int(params.get("duration_minutes", 60)), 40320))
+            until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
+            targets = [m for m in guild.members if len(m.roles) == 1 and not m.bot]
+            count = 0
+            for member in targets:
+                try:
+                    await member.timeout(until, reason="Mass timeout — raid containment")
+                    count += 1
+                except discord.Forbidden:
+                    pass
+            logger.info("mass_timeout | targets=%d timed_out=%d minutes=%d | guild=%r", len(targets), count, minutes, guild.name)
+            return f"⏱️ Timed out {count} roleless members for {minutes} minute(s)."
+
         logger.error("No executor implemented for action %r", action)
         return f"Executor for `{action}` is not implemented."
 
