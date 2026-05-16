@@ -12,8 +12,8 @@ from utils.planner import build_plan
 logger = logging.getLogger(__name__)
 
 _BULK_DELAY = 0.5  # seconds between individual API calls in bulk loops
-_OLD_MSG_DELAY = 1.1  # seconds between individual deletes of messages >14 days old
-_BULK_DELETE_DELAY = 1.0  # seconds between bulk-delete batches
+_BULK_DELETE_DELAY = 1.0  # seconds between bulk-delete batches (≤14-day messages)
+_CLONE_THRESHOLD = 500  # bulk_delete counts >= this use channel-clone instead of purge
 
 
 async def _api(coro_factory, retries: int = 3):
@@ -35,25 +35,22 @@ async def _api(coro_factory, retries: int = 3):
                 raise
 
 
-async def _purge_messages(
+async def _purge_recent(
     channel: discord.TextChannel,
     *,
     limit: int | None = None,
     check=None,
-) -> int:
+) -> tuple[int, int]:
     """
-    Delete messages from a channel in a rate-limit-safe way.
+    Delete only recent messages (≤14 days) using the bulk-delete endpoint.
+    Messages older than 14 days are counted but not deleted — individual
+    message deletes are permanently rate-limited and unreliable.
 
-    Paginates history manually (0.5s between pages) to avoid bursting the GET
-    endpoint, then:
-    - Recent messages (≤14 days): bulk-deleted in batches of up to 100
-    - Old messages (>14 days): individually deleted with _OLD_MSG_DELAY spacing
-
-    Returns the count of deleted messages.
+    Returns (deleted, skipped_old).
     """
     cutoff = discord.utils.utcnow() - datetime.timedelta(days=14)
-    recent: list[discord.Message] = []
-    old: list[discord.Message] = []
+    to_delete: list[discord.Message] = []
+    skipped_old = 0
 
     fetched = 0
     before = None
@@ -79,9 +76,9 @@ async def _purge_messages(
             if check and not check(msg):
                 continue
             if msg.created_at > cutoff:
-                recent.append(msg)
+                to_delete.append(msg)
             else:
-                old.append(msg)
+                skipped_old += 1
 
         fetched += len(page)
         before = page[-1]
@@ -92,26 +89,21 @@ async def _purge_messages(
         await asyncio.sleep(0.5)  # pace history GET requests
 
     deleted = 0
-
-    for i in range(0, len(recent), 100):
-        batch = recent[i:i + 100]
+    for i in range(0, len(to_delete), 100):
+        batch = to_delete[i:i + 100]
         if len(batch) == 1:
             await _api(batch[0].delete)
         else:
             await _api(lambda b=batch: channel.delete_messages(b))
         deleted += len(batch)
-        await asyncio.sleep(_BULK_DELETE_DELAY)
-
-    for msg in old:
-        await _api(msg.delete)
-        deleted += 1
-        await asyncio.sleep(_OLD_MSG_DELAY)
+        if i + 100 < len(to_delete):
+            await asyncio.sleep(_BULK_DELETE_DELAY)
 
     logger.debug(
-        "_purge_messages | channel=#%s recent=%d old=%d deleted=%d",
-        channel.name, len(recent), len(old), deleted,
+        "_purge_recent | channel=#%s deleted=%d skipped_old=%d",
+        channel.name, deleted, skipped_old,
     )
-    return deleted
+    return deleted, skipped_old
 
 
 # ---------------------------------------------------------------------------
@@ -448,9 +440,9 @@ class NaturalLanguage(commands.Cog):
             if not channel:
                 logger.warning("bulk_delete: channel %r not found | guild=%r (ID=%s)", raw, guild.name, guild.id)
                 return f"Channel `#{raw}` not found. Available: {', '.join('#' + c.name for c in guild.text_channels[:10])}"
-            if count is None:
-                # Recreate the channel — preserves all settings in 2 API calls instead of
-                # thousands of individual deletes (required for messages older than 14 days).
+            if count is None or count >= _CLONE_THRESHOLD:
+                # Recreate the channel — preserves all settings in 2 API calls.
+                # Used for "all" and large counts (Gemini often returns 500/1000 for "delete all").
                 logger.info(
                     "Executing bulk_delete (recreate) | channel=#%s (ID=%s) | guild=%r (ID=%s)",
                     channel.name, channel.id, guild.name, guild.id,
@@ -465,8 +457,9 @@ class NaturalLanguage(commands.Cog):
                     "Executing bulk_delete | channel=#%s (ID=%s) count=%d | guild=%r (ID=%s)",
                     channel.name, channel.id, count, guild.name, guild.id,
                 )
-                deleted = await _purge_messages(channel, limit=count)
-                return f"Deleted {deleted}/{count} messages from `#{channel.name}`."
+                deleted, skipped = await _purge_recent(channel, limit=count)
+                note = f" ({skipped} messages older than 14 days were skipped)" if skipped else ""
+                return f"Deleted {deleted} messages from `#{channel.name}`{note}."
 
         if action == "prune_members":
             days = max(1, min(int(params.get("days", 7)), 30))
@@ -694,13 +687,16 @@ class NaturalLanguage(commands.Cog):
                 channels = list(guild.text_channels)
 
             total_deleted = 0
+            total_skipped = 0
             for i, ch in enumerate(channels):
                 try:
-                    total_deleted += await _purge_messages(
+                    d, s = await _purge_recent(
                         ch,
                         limit=limit,
                         check=lambda m, uid=member.id: m.author.id == uid,
                     )
+                    total_deleted += d
+                    total_skipped += s
                 except discord.Forbidden:
                     logger.warning("No permission to purge #%s (ID=%s)", ch.name, ch.id)
                 if i < len(channels) - 1:
@@ -708,10 +704,11 @@ class NaturalLanguage(commands.Cog):
 
             scope = f"`#{channels[0].name}`" if raw_channel else "all channels"
             logger.info(
-                "delete_user_messages | member=%s (ID=%s) scope=%s deleted=%d | guild=%r",
-                member, member.id, scope, total_deleted, guild.name,
+                "delete_user_messages | member=%s (ID=%s) scope=%s deleted=%d skipped=%d | guild=%r",
+                member, member.id, scope, total_deleted, total_skipped, guild.name,
             )
-            return f"Deleted **{total_deleted}** messages from **{member.display_name}** across {scope}."
+            note = f" ({total_skipped} messages older than 14 days were skipped)" if total_skipped else ""
+            return f"Deleted **{total_deleted}** messages from **{member.display_name}** across {scope}{note}."
 
         # ── Member management ──────────────────────────────────────────────────
 
