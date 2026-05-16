@@ -30,8 +30,9 @@ _COG_DESCRIPTIONS = {
 
 def _usage(prefix: str, cmd: commands.Command) -> str:
     """Build a usage string from a command's signature."""
-    return f"`{prefix}{cmd.qualified_name} {cmd.signature}`.strip()`" if cmd.signature \
-        else f"`{prefix}{cmd.qualified_name}`"
+    if cmd.signature:
+        return f"`{prefix}{cmd.qualified_name} {cmd.signature}`"
+    return f"`{prefix}{cmd.qualified_name}`"
 
 
 class RichHelpCommand(commands.HelpCommand):
@@ -94,8 +95,7 @@ class RichHelpCommand(commands.HelpCommand):
         visible = await self.filter_commands(cog.get_commands(), sort=True)
         for cmd in visible:
             embed.add_field(
-                name=f"`{prefix}{cmd.name} {cmd.signature}`.strip()`"
-                     if cmd.signature else f"`{prefix}{cmd.name}`",
+                name=_usage(prefix, cmd),
                 value=cmd.help or "No description.",
                 inline=False,
             )
@@ -111,11 +111,7 @@ class RichHelpCommand(commands.HelpCommand):
         cog_name = cmd.cog.qualified_name if cmd.cog else ""
         color = _COG_COLORS.get(cog_name, _DEFAULT_COLOR)
 
-        usage = (
-            f"`{prefix}{cmd.qualified_name} {cmd.signature}`"
-            if cmd.signature
-            else f"`{prefix}{cmd.qualified_name}`"
-        )
+        usage = _usage(prefix, cmd)
 
         embed = discord.Embed(
             title=f"Command: {prefix}{cmd.qualified_name}",

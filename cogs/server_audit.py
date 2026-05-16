@@ -6,7 +6,7 @@ from discord.ext import commands
 
 import database
 import config
-from utils.permissions import has_admin_role, build_embed, severity_color
+from utils.permissions import has_admin_role, build_embed, build_findings_embeds
 from utils.gemini import summarize_findings
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ class ServerAudit(commands.Cog):
 
         findings = []
         run_id = database.start_audit_run("server", guild.id, triggered_by)
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc)
         inactive_days = config.get("server.inactive_channel_days", 14)
         expected_channels = config.get("server.min_onboarding_channels", ["welcome", "rules", "announcements"])
 
@@ -39,7 +39,7 @@ class ServerAudit(commands.Cog):
                 if not last_msg:
                     dead_channels.append((channel, None))
                 else:
-                    delta = now - last_msg[0].created_at.replace(tzinfo=None)
+                    delta = now - last_msg[0].created_at
                     if delta.days >= inactive_days:
                         dead_channels.append((channel, delta.days))
             except discord.Forbidden:
@@ -191,13 +191,9 @@ class ServerAudit(commands.Cog):
         embed.add_field(name="Triggered by", value=triggered_by, inline=True)
         await channel.send(embed=embed)
 
-        for f in findings:
-            e = discord.Embed(
-                title=f"[{f['severity'].upper()}] {f['category'].replace('_', ' ').title()}",
-                description=f["description"],
-                color=severity_color(f["severity"]),
-            )
-            await channel.send(embed=e)
+        detail_embeds = build_findings_embeds("📊 Server Audit — recommendations", findings)
+        for i in range(0, len(detail_embeds), 10):
+            await channel.send(embeds=detail_embeds[i:i + 10])
 
         ai_summary = await summarize_findings(findings, "server health")
         if ai_summary:

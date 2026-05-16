@@ -2,12 +2,10 @@ import json
 import logging
 import re
 import time
-from google import genai
 
-import config
+from utils.gemini import get_client
 
 logger = logging.getLogger(__name__)
-_client = None
 
 ACTIONS = [
     {
@@ -304,19 +302,11 @@ ACTIONS = [
 ]
 
 
-def _get_client():
-    global _client
-    if _client is None:
-        key = config.get("gemini_key")
-        if not key:
-            logger.warning("gemini_key not configured — natural language planning unavailable")
-            return None
-        try:
-            _client = genai.Client(api_key=key)
-            logger.info("Gemini client (planner) initialised")
-        except Exception:
-            logger.error("Failed to initialise Gemini planner client", exc_info=True)
-    return _client
+# Serialized once at import — the action catalogue is static.
+_ACTIONS_TEXT = json.dumps(
+    [{"name": a["name"], "description": a["description"], "parameters": a["parameters"]} for a in ACTIONS],
+    indent=2,
+)
 
 
 async def build_plan(query: str) -> dict | None:
@@ -341,17 +331,13 @@ async def build_plan(query: str) -> dict | None:
     Returns None on Gemini error.
     Steps list contains a single entry with action "unknown" if nothing matches.
     """
-    client = _get_client()
+    client = get_client()
     if not client:
         return None
 
-    actions_text = json.dumps(
-        [{"name": a["name"], "description": a["description"], "parameters": a["parameters"]} for a in ACTIONS],
-        indent=2,
-    )
     prompt = (
         f'A Discord server admin typed: "{query}"\n\n'
-        f"Available actions:\n{actions_text}\n\n"
+        f"Available actions:\n{_ACTIONS_TEXT}\n\n"
         "Map the request to one or more actions from the list above, executed in order.\n"
         "Return ONLY a JSON object (no markdown fences, no explanation) with this exact shape:\n"
         "{\n"

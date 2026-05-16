@@ -4,9 +4,6 @@ from discord.ext import commands
 import config
 from utils.permissions import has_admin_role, build_embed
 
-# Secrets that must never appear in Discord output
-_REDACTED = {"bot.token", "token"}
-
 
 class Admin(commands.Cog):
     """General admin utility commands."""

@@ -12,6 +12,7 @@ venv/
 # Bot runtime
 bot.db
 data/
+logs/
 
 # Secrets / local config overrides
 .env

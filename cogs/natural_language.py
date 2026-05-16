@@ -6,6 +6,7 @@ import time
 import discord
 from discord.ext import commands
 
+import config
 from utils.permissions import has_admin_role, build_embed
 from utils.planner import build_plan
 
@@ -393,6 +394,7 @@ class NaturalLanguage(commands.Cog):
                 ctx.guild.id if ctx.guild else "N/A",
             )
 
+            guild_id = ctx.guild.id if ctx.guild else "N/A"
             results = []
             for i, step in enumerate(steps, 1):
                 action = step["action"]
@@ -400,7 +402,17 @@ class NaturalLanguage(commands.Cog):
                 summary = step.get("summary", "")
                 await ctx.send(embed=build_embed(f"⚙️ Step {i}/{len(steps)}", summary, discord.Color.blue()))
                 t_exec = time.perf_counter()
-                result = await self._execute(ctx, action, params)
+                try:
+                    result = await self._execute(ctx, action, params)
+                except discord.Forbidden as e:
+                    result = f"❌ Skipped — the bot lacks permission ({e.text or 'Forbidden'})."
+                    logger.warning("Step %d/%d (%r) forbidden | guild=%s: %s", i, len(steps), action, guild_id, e)
+                except discord.HTTPException as e:
+                    result = f"❌ Failed — Discord API error {e.status} ({e.text or e})."
+                    logger.warning("Step %d/%d (%r) HTTP %s | guild=%s: %s", i, len(steps), action, e.status, guild_id, e)
+                except Exception as e:
+                    result = f"❌ Failed — {type(e).__name__}: {e}"
+                    logger.error("Step %d/%d (%r) crashed | guild=%s", i, len(steps), action, guild_id, exc_info=True)
                 exec_elapsed = time.perf_counter() - t_exec
                 logger.info(
                     "Step %d/%d complete | action=%r elapsed=%.2fs result=%r",
@@ -443,6 +455,17 @@ class NaturalLanguage(commands.Cog):
             if count is None or count >= _CLONE_THRESHOLD:
                 # Recreate the channel — preserves all settings in 2 API calls.
                 # Used for "all" and large counts (Gemini often returns 500/1000 for "delete all").
+                protected = {config.get("audit_channel_id"), config.get("log_channel_id")}
+                if channel.id in protected:
+                    logger.warning(
+                        "bulk_delete: refused recreate of configured channel #%s (ID=%s) | guild=%r (ID=%s)",
+                        channel.name, channel.id, guild.name, guild.id,
+                    )
+                    return (
+                        f"⚠️ `#{channel.name}` is a configured audit/log channel. Recreating it would "
+                        f"change its ID and silently break bot configuration. Specify an explicit "
+                        f"count below {_CLONE_THRESHOLD} to purge recent messages instead."
+                    )
                 logger.info(
                     "Executing bulk_delete (recreate) | channel=#%s (ID=%s) | guild=%r (ID=%s)",
                     channel.name, channel.id, guild.name, guild.id,
@@ -545,7 +568,7 @@ class NaturalLanguage(commands.Cog):
 
         if action == "find_inactive_channels":
             days = int(params.get("days", 14))
-            now = datetime.datetime.utcnow()
+            now = datetime.datetime.now(datetime.timezone.utc)
             logger.info("Executing find_inactive_channels | days=%d | guild=%r (ID=%s)", days, guild.name, guild.id)
             results = []
             for channel in guild.text_channels:
@@ -554,7 +577,7 @@ class NaturalLanguage(commands.Cog):
                     if not msgs:
                         results.append(f"#{channel.name} (no messages)")
                     else:
-                        delta = now - msgs[0].created_at.replace(tzinfo=None)
+                        delta = now - msgs[0].created_at
                         if delta.days >= days:
                             results.append(f"#{channel.name} ({delta.days}d ago)")
                 except discord.Forbidden:

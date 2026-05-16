@@ -108,7 +108,12 @@ def get_last_run(key: str):
     with get_conn() as conn:
         row = conn.execute("SELECT last_run FROM scheduler_state WHERE key = ?", (key,)).fetchone()
         if row:
-            return datetime.datetime.fromisoformat(row["last_run"])
+            ts = datetime.datetime.fromisoformat(row["last_run"])
+            # Rows written before the tz-aware migration are naive — treat as UTC
+            # so arithmetic against tz-aware "now" doesn't raise.
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=datetime.timezone.utc)
+            return ts
         return None
 
 
@@ -133,4 +138,4 @@ def get_recent_findings(guild_id: int, audit_type: str, limit: int = 20):
 
 
 def _now() -> str:
-    return datetime.datetime.utcnow().isoformat()
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()

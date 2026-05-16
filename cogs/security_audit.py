@@ -6,7 +6,7 @@ from typing import Optional
 
 import database
 import config
-from utils.permissions import has_admin_role, build_embed, severity_color
+from utils.permissions import has_admin_role, build_embed, build_findings_embeds
 from utils.gemini import summarize_findings
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ class SecurityAudit(commands.Cog):
                 continue
             dangerous = [name for attr, name in DANGEROUS_PERMS if getattr(role.permissions, attr, False)]
             if dangerous and len(role.members) > 0:
-                pct = len(role.members) / max(guild.member_count, 1) * 100
+                pct = len(role.members) / max(guild.member_count or 0, 1) * 100
                 if pct > 50:
                     f = {
                         "severity": "warning",
@@ -188,14 +188,9 @@ class SecurityAudit(commands.Cog):
         embed.add_field(name="Triggered by", value=triggered_by, inline=True)
         await channel.send(embed=embed)
 
-        for f in findings:
-            color = severity_color(f["severity"])
-            e = discord.Embed(
-                title=f"[{f['severity'].upper()}] {f['category']}",
-                description=f["description"],
-                color=color,
-            )
-            await channel.send(embed=e)
+        detail_embeds = build_findings_embeds("🔒 Security Audit — findings", findings)
+        for i in range(0, len(detail_embeds), 10):
+            await channel.send(embeds=detail_embeds[i:i + 10])
 
         ai_summary = await summarize_findings(findings, "security")
         if ai_summary:

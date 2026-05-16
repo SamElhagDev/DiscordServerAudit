@@ -18,6 +18,7 @@ class IntervalScheduler:
     def __init__(self, bot):
         self.bot = bot
         self._tasks: list[dict] = []
+        self._running = False
 
     def register(self, key: str, interval_hours: float, coro_factory: Callable[[], Awaitable]):
         """
@@ -26,6 +27,9 @@ class IntervalScheduler:
         - interval_hours: how often to run (from config)
         - coro_factory: a zero-arg async callable that performs the task
         """
+        if any(t["key"] == key for t in self._tasks):
+            logger.debug("Scheduled task %r already registered — skipping duplicate", key)
+            return
         self._tasks.append({
             "key": key,
             "interval": datetime.timedelta(hours=interval_hours),
@@ -35,9 +39,13 @@ class IntervalScheduler:
 
     async def start(self):
         """Start the scheduler loop. Call this from bot's on_ready."""
+        if self._running:
+            logger.debug("Scheduler.start() called again — loop already running, ignoring")
+            return
+        self._running = True
         logger.info("Scheduler started.")
         while True:
-            now = datetime.datetime.utcnow()
+            now = datetime.datetime.now(datetime.timezone.utc)
             for task in self._tasks:
                 last_run = database.get_last_run(task["key"])
                 due = last_run is None or (now - last_run) >= task["interval"]

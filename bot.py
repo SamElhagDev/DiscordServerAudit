@@ -88,6 +88,7 @@ class AdminBot(commands.Bot):
         )
         self.scheduler = IntervalScheduler(self)
         self._start_time = time.monotonic()
+        self._scheduler_started = False
 
     async def setup_hook(self):
         database.init_db()
@@ -101,7 +102,7 @@ class AdminBot(commands.Bot):
     async def on_ready(self):
         elapsed = time.monotonic() - self._start_time
         guild_count = len(self.guilds)
-        member_count = sum(g.member_count for g in self.guilds)
+        member_count = sum((g.member_count or 0) for g in self.guilds)
 
         logger.info("=" * 60)
         logger.info("Bot ready: %s (ID=%s)", self.user, self.user.id)
@@ -120,13 +121,18 @@ class AdminBot(commands.Bot):
         logger.info("Log file: %s", _LOG_PATH)
         logger.info("=" * 60)
 
+        if self._scheduler_started:
+            logger.debug("on_ready fired again (reconnect) — scheduler already running, skipping registration")
+            return
+        self._scheduler_started = True
+
         security_interval = config.get("intervals.security_audit", 24)
         server_interval = config.get("intervals.server_audit", 168)
 
         for guild in self.guilds:
             logger.debug(
                 "Registering scheduler tasks for guild %r (ID=%s, members=%d)",
-                guild.name, guild.id, guild.member_count,
+                guild.name, guild.id, guild.member_count or 0,
             )
             self.scheduler.register(
                 key=f"security_audit_{guild.id}",
@@ -163,13 +169,29 @@ class AdminBot(commands.Bot):
     async def on_command_completion(self, ctx: commands.Context):
         logger.debug("CMD completed: %r | user=%s (ID=%s)", ctx.command.qualified_name, ctx.author, ctx.author.id)
 
+    def _audit_channel_in_guild(self, guild: discord.Guild) -> bool:
+        """A scheduled audit only makes sense if its results channel lives in this guild."""
+        audit_channel_id = config.get("audit_channel_id", 0)
+        if not audit_channel_id or guild.get_channel(audit_channel_id) is None:
+            logger.info(
+                "Skipping scheduled audit for guild %r (ID=%s) — configured audit channel %s "
+                "is not in this guild",
+                guild.name, guild.id, audit_channel_id,
+            )
+            return False
+        return True
+
     async def _run_security_audit(self, guild: discord.Guild):
+        if not self._audit_channel_in_guild(guild):
+            return
         cog = self.get_cog("SecurityAudit")
         if cog:
             findings = await cog.run_audit(guild, triggered_by="scheduler")
             await cog.post_audit_results(guild, findings)
 
     async def _run_server_audit(self, guild: discord.Guild):
+        if not self._audit_channel_in_guild(guild):
+            return
         cog = self.get_cog("ServerAudit")
         if cog:
             findings = await cog.run_audit(guild, triggered_by="scheduler")

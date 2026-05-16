@@ -8,12 +8,13 @@ logger = logging.getLogger(__name__)
 _client = None
 
 
-def _get_client():
+def get_client():
+    """Lazily build and cache a single shared genai client (None if no key)."""
     global _client
     if _client is None:
         key = config.get("gemini_key")
         if not key:
-            logger.debug("gemini_key not set — AI summaries disabled")
+            logger.debug("gemini_key not set — Gemini features disabled")
             return None
         try:
             _client = genai.Client(api_key=key)
@@ -25,7 +26,7 @@ def _get_client():
 
 async def summarize_findings(findings: list[dict], audit_type: str) -> str | None:
     """Return an AI-generated action plan for the given audit findings, or None if Gemini is not configured."""
-    client = _get_client()
+    client = get_client()
     if not client or not findings:
         return None
 
