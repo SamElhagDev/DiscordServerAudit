@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import json
 import logging
 import time
@@ -63,8 +64,35 @@ class BulkTasks(commands.Cog):
             return
 
         logger.info("bulkdelete confirmed — purging #%s limit=%d | %s", channel.name, limit, _guild_ctx(ctx))
+
+        cutoff = discord.utils.utcnow() - datetime.timedelta(days=14)
+        old_count = 0
+        async for msg in channel.history(limit=limit):
+            if msg.created_at < cutoff:
+                old_count += 1
+
+        if old_count:
+            await ctx.send(
+                embed=build_embed(
+                    "⚠️ Old Messages Detected",
+                    f"**{old_count}** of the {limit} messages are older than 14 days and cannot be bulk-deleted. "
+                    "They will be deleted one-by-one, which is slower and may be rate-limited.",
+                    discord.Color.orange(),
+                ),
+                delete_after=15,
+            )
+
         t0 = time.perf_counter()
-        deleted = await channel.purge(limit=limit)
+        try:
+            deleted = await channel.purge(limit=limit, reason=f"Bulk delete by {ctx.author}")
+        except discord.HTTPException as e:
+            if e.status == 429:
+                retry_after = float(e.response.headers.get("X-RateLimit-Reset-After", 5))
+                logger.warning("bulkdelete rate limited — sleeping %.2fs | %s", retry_after, _guild_ctx(ctx))
+                await asyncio.sleep(retry_after)
+                deleted = await channel.purge(limit=limit, reason=f"Bulk delete by {ctx.author}")
+            else:
+                raise
         elapsed = time.perf_counter() - t0
 
         logger.info(
@@ -73,7 +101,7 @@ class BulkTasks(commands.Cog):
         )
         database.log_bulk_task(
             "bulk_delete", str(ctx.author.id), ctx.guild.id,
-            json.dumps({"channel": str(channel.id), "requested": limit, "deleted": len(deleted)}),
+            json.dumps({"channel": str(channel.id), "requested": limit, "deleted": len(deleted), "old_messages": old_count}),
         )
         await ctx.send(
             embed=build_embed("✅ Bulk Delete Complete", f"Deleted **{len(deleted)}** messages in {channel.mention}.", discord.Color.green()),
@@ -387,9 +415,20 @@ class BulkTasks(commands.Cog):
         t0 = time.perf_counter()
 
         for channel in channels:
-            await channel.delete(reason=f"Bulk delete by {ctx.author}")
-            logger.debug("Deleted channel #%s from category %r", channel.name, category.name)
-            await asyncio.sleep(0.5)
+            for attempt in range(5):
+                try:
+                    await channel.delete(reason=f"Bulk delete by {ctx.author}")
+                    logger.debug("Deleted channel #%s from category %r", channel.name, category.name)
+                    await asyncio.sleep(1.5)
+                    break
+                except discord.HTTPException as e:
+                    if e.status == 429:
+                        retry_after = float(e.response.headers.get("X-RateLimit-Reset-After", 5))
+                        logger.warning("bulkdeletechannels rate limited — sleeping %.2fs", retry_after)
+                        await asyncio.sleep(retry_after)
+                    else:
+                        logger.warning("bulkdeletechannels failed to delete #%s: %s", channel.name, e)
+                        break
 
         elapsed = time.perf_counter() - t0
         logger.info(
