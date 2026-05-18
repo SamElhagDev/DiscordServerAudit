@@ -796,7 +796,7 @@ class Stats(commands.Cog):
             )
 
         text_channels = [
-            ch for ch in guild.text_channels
+            ch for ch in (*guild.text_channels, *guild.voice_channels, *guild.stage_channels)
             if ch.permissions_for(guild.me).read_message_history
         ]
         excluded_channels = config.get("stats.excluded_channels", [])

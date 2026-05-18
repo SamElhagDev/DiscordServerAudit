@@ -36,7 +36,7 @@ server:
 stats:
   enabled: true                    # Master toggle for stats collection
   snapshot_interval_hours: 1       # How often to capture member snapshots
-  retention_days: 30               # How long to keep raw event data
+  retention_days: 7300               # How long to keep raw event data
   rollup_hour_utc: 4               # Hour (UTC) to run daily aggregation
   track_reactions: true            # Whether to count reactions
   excluded_channels: []            # Channel IDs to exclude from tracking
