@@ -6,7 +6,10 @@
       "Bash(grep -E \"\\\\.\\(py|yaml|env|json|md\\)$\")",
       "Bash(\"C:\\\\apps\\\\DiscordServerAudit\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import importlib.metadata as m; print\\(m.version\\('google-genai'\\)\\)\")",
       "PowerShell($py = \"C:\\\\apps\\\\DiscordServerAudit\\\\.venv\\\\Scripts\\\\python.exe\"; if \\(Test-Path $py\\) { & $py -c \"import importlib.metadata as m; print\\(m.version\\('google-genai'\\)\\)\" } else { \"VENV_NOT_FOUND\" })",
-      "Bash(python -m py_compile bot.py database.py utils/scheduler.py utils/permissions.py utils/gemini.py utils/planner.py cogs/admin.py cogs/security_audit.py cogs/server_audit.py cogs/natural_language.py)"
+      "Bash(python -m py_compile bot.py database.py utils/scheduler.py utils/permissions.py utils/gemini.py utils/planner.py cogs/admin.py cogs/security_audit.py cogs/server_audit.py cogs/natural_language.py)",
+      "PowerShell(.\\\\.specify\\\\scripts\\\\powershell\\\\setup-plan.ps1 -Json)",
+      "Bash(python -m py_compile database.py)",
+      "Bash(python -m py_compile cogs/stats.py)"
     ]
   }
 }

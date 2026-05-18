@@ -71,6 +71,7 @@ COGS = [
     "cogs.security_audit",
     "cogs.server_audit",
     "cogs.natural_language",
+    "cogs.stats",
 ]
 
 
@@ -80,6 +81,7 @@ class AdminBot(commands.Bot):
         intents = discord.Intents.default()
         intents.members = True
         intents.message_content = True
+        intents.voice_states = True
 
         super().__init__(
             command_prefix=cfg.get("bot", {}).get("prefix", "!"),
@@ -98,6 +100,8 @@ class AdminBot(commands.Bot):
                 logger.info("Loaded cog: %s", cog)
             except Exception as e:
                 logger.error("Failed to load cog %s: %s", cog, e, exc_info=True)
+        synced = await self.tree.sync()
+        logger.info("Synced %d app commands", len(synced))
 
     async def on_ready(self):
         elapsed = time.monotonic() - self._start_time
