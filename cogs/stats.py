@@ -974,93 +974,155 @@ class Stats(commands.Cog):
         await ctx.send(embeds=[e1, e2])
 
 
-    @commands.hybrid_command(name="dbcheck", description="Diagnose message_events for duplicates and data consistency")
+    @commands.hybrid_command(name="dbcheck", description="Diagnose all stats tables for duplicates and consistency")
     @commands.guild_only()
     async def dbcheck_cmd(self, ctx: commands.Context):
-        """Check the stats database for duplicate rows and compare raw vs rolled-up totals."""
+        """Check all stats tables for duplicate rows and compare raw vs rolled-up totals."""
         guild_id = ctx.guild.id
+
+        def _dupe_count(conn, table, cols, guild_id):
+            col_list = ", ".join(cols)
+            return conn.execute(
+                f"SELECT COALESCE(SUM(n - 1), 0) as c FROM ("
+                f"  SELECT COUNT(*) as n FROM {table} WHERE guild_id = ?"
+                f"  GROUP BY {col_list} HAVING COUNT(*) > 1"
+                f")", (guild_id,)
+            ).fetchone()["c"]
+
         with database.get_conn() as conn:
-            raw_total = conn.execute(
+            msg_total = conn.execute(
                 "SELECT COUNT(*) as c FROM message_events WHERE guild_id = ?", (guild_id,)
             ).fetchone()["c"]
+            msg_dupes = _dupe_count(conn, "message_events",
+                                    ["channel_id", "user_id", "recorded_at"], guild_id)
 
-            dupe_groups = conn.execute(
-                "SELECT COUNT(*) as c FROM ("
-                "  SELECT 1 FROM message_events WHERE guild_id = ?"
-                "  GROUP BY channel_id, user_id, recorded_at HAVING COUNT(*) > 1"
-                ")", (guild_id,)
+            voice_total = conn.execute(
+                "SELECT COUNT(*) as c FROM voice_sessions WHERE guild_id = ?", (guild_id,)
             ).fetchone()["c"]
+            voice_dupes = _dupe_count(conn, "voice_sessions",
+                                      ["channel_id", "user_id", "joined_at"], guild_id)
 
-            dupe_rows = conn.execute(
-                "SELECT COALESCE(SUM(n - 1), 0) as c FROM ("
-                "  SELECT COUNT(*) as n FROM message_events WHERE guild_id = ?"
-                "  GROUP BY channel_id, user_id, recorded_at HAVING COUNT(*) > 1"
-                ")", (guild_id,)
+            member_total = conn.execute(
+                "SELECT COUNT(*) as c FROM member_events WHERE guild_id = ?", (guild_id,)
             ).fetchone()["c"]
+            member_dupes = _dupe_count(conn, "member_events",
+                                       ["user_id", "event_type", "recorded_at"], guild_id)
 
-            rolled_msgs = conn.execute(
+            rolled_user_msgs = conn.execute(
                 "SELECT COALESCE(SUM(message_count), 0) as c FROM user_activity_daily WHERE guild_id = ?",
                 (guild_id,),
             ).fetchone()["c"]
-
-            chan_msgs = conn.execute(
+            rolled_chan_msgs = conn.execute(
                 "SELECT COALESCE(SUM(message_count), 0) as c FROM channel_activity_daily WHERE guild_id = ?",
                 (guild_id,),
             ).fetchone()["c"]
+            rolled_voice = conn.execute(
+                "SELECT COALESCE(SUM(voice_minutes), 0) as c FROM user_activity_daily WHERE guild_id = ?",
+                (guild_id,),
+            ).fetchone()["c"]
+            raw_voice = conn.execute(
+                "SELECT COALESCE(SUM(duration_seconds), 0) / 60 as c FROM voice_sessions "
+                "WHERE guild_id = ? AND duration_seconds IS NOT NULL", (guild_id,),
+            ).fetchone()["c"]
 
-            top_channels = conn.execute(
+            all_channels = conn.execute(
                 "SELECT channel_id, COUNT(*) as c FROM message_events WHERE guild_id = ?"
-                " GROUP BY channel_id ORDER BY c DESC LIMIT 10",
+                " GROUP BY channel_id ORDER BY c DESC",
                 (guild_id,),
             ).fetchall()
 
-        lines = [
-            f"**Raw message_events:** {raw_total:,}",
-            f"**Duplicate groups (same channel+user+timestamp):** {dupe_groups:,}",
-            f"**Extra rows from duplicates:** {dupe_rows:,}",
-            f"**user_activity_daily SUM(message_count):** {rolled_msgs:,}",
-            f"**channel_activity_daily SUM(message_count):** {chan_msgs:,}",
+        total_dupes = msg_dupes + voice_dupes + member_dupes
+        header_lines = [
+            "**Raw Tables (duplicate extra rows):**",
+            f"  message_events: {msg_total:,} rows ({msg_dupes:,} dupes)",
+            f"  voice_sessions: {voice_total:,} rows ({voice_dupes:,} dupes)",
+            f"  member_events: {member_total:,} rows ({member_dupes:,} dupes)",
             "",
-            "**Top 10 channels (raw events):**",
+            "**Rolled-up Totals:**",
+            f"  user_activity_daily msgs: {rolled_user_msgs:,}",
+            f"  channel_activity_daily msgs: {rolled_chan_msgs:,}",
+            f"  user_activity_daily voice: {rolled_voice:,}m",
+            f"  voice_sessions raw total: {raw_voice:,}m",
+            "",
+            f"**All channels — {len(all_channels)} (raw events):**",
         ]
-        for row in top_channels:
+        channel_lines = []
+        for row in all_channels:
             ch = ctx.guild.get_channel(row["channel_id"])
             name = f"#{ch.name}" if ch else str(row["channel_id"])
-            lines.append(f"  {name}: {row['c']:,}")
+            channel_lines.append(f"  {name}: {row['c']:,}")
 
-        embed = discord.Embed(
-            title="Database Consistency Check",
-            description="\n".join(lines),
-            color=COLOR_NEUTRAL,
+        color = COLOR_POSITIVE if total_dupes == 0 else COLOR_NEGATIVE
+        footer = (
+            f"Found {total_dupes:,} total duplicate rows — run !dbclean to remove them"
+            if total_dupes > 0 else "No duplicates found — all tables clean"
         )
-        if dupe_rows > 0:
-            embed.set_footer(text=f"Found {dupe_rows:,} duplicate rows — run !dbclean to remove them")
-        else:
-            embed.set_footer(text="No duplicates found")
-        await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="dbclean", description="Remove duplicate message_events rows")
+        description = "\n".join(header_lines + channel_lines)
+        if len(description) <= 4096:
+            embed = discord.Embed(title="Database Consistency Check", description=description, color=color)
+            embed.set_footer(text=footer)
+            await ctx.send(embed=embed)
+        else:
+            embed = discord.Embed(title="Database Consistency Check", description="\n".join(header_lines), color=color)
+            await ctx.send(embed=embed)
+            chunk: list[str] = []
+            chunk_len = 0
+            page = 1
+            for line in channel_lines:
+                if chunk_len + len(line) + 1 > 4096:
+                    page += 1
+                    await ctx.send(embed=discord.Embed(description="\n".join(chunk), color=color))
+                    chunk = []
+                    chunk_len = 0
+                chunk.append(line)
+                chunk_len += len(line) + 1
+            if chunk:
+                e = discord.Embed(description="\n".join(chunk), color=color)
+                e.set_footer(text=footer)
+                await ctx.send(embed=e)
+
+    @commands.hybrid_command(name="dbclean", description="Remove duplicate rows from all stats tables")
     @commands.guild_only()
     async def dbclean_cmd(self, ctx: commands.Context):
-        """Delete duplicate message_events rows, keeping one copy of each."""
+        """Delete duplicate rows from message_events, voice_sessions, and member_events."""
         guild_id = ctx.guild.id
-        with database.get_conn() as conn:
-            deleted = conn.execute(
-                "DELETE FROM message_events WHERE guild_id = ? AND rowid NOT IN ("
-                "  SELECT MIN(rowid) FROM message_events WHERE guild_id = ?"
-                "  GROUP BY channel_id, user_id, recorded_at"
-                ")", (guild_id, guild_id),
+
+        def _dedup(conn, table, cols, guild_id):
+            col_list = ", ".join(cols)
+            return conn.execute(
+                f"DELETE FROM {table} WHERE guild_id = ? AND rowid NOT IN ("
+                f"  SELECT MIN(rowid) FROM {table} WHERE guild_id = ?"
+                f"  GROUP BY {col_list}"
+                f")", (guild_id, guild_id),
             ).rowcount
-        if deleted:
+
+        with database.get_conn() as conn:
+            msg_del = _dedup(conn, "message_events",
+                             ["channel_id", "user_id", "recorded_at"], guild_id)
+            voice_del = _dedup(conn, "voice_sessions",
+                               ["channel_id", "user_id", "joined_at"], guild_id)
+            member_del = _dedup(conn, "member_events",
+                                ["user_id", "event_type", "recorded_at"], guild_id)
+
+        total = msg_del + voice_del + member_del
+        if total:
+            lines = []
+            if msg_del:
+                lines.append(f"message_events: {msg_del:,}")
+            if voice_del:
+                lines.append(f"voice_sessions: {voice_del:,}")
+            if member_del:
+                lines.append(f"member_events: {member_del:,}")
             embed = discord.Embed(
                 title="Database Cleaned",
-                description=f"Removed **{deleted:,}** duplicate rows from message_events.",
+                description=f"Removed **{total:,}** duplicate rows:\n" + "\n".join(lines),
                 color=COLOR_POSITIVE,
             )
         else:
             embed = discord.Embed(
                 title="Database Clean",
-                description="No duplicates found — database is clean.",
+                description="No duplicates found — all tables are clean.",
                 color=COLOR_POSITIVE,
             )
         await ctx.send(embed=embed)
