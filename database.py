@@ -536,6 +536,7 @@ def get_user_stats(guild_id: int, user_id: int, days: int) -> dict:
             (guild_id, user_id, cutoff_date),
         ).fetchone()
 
+        # Completed sessions whose date hasn't been rolled up into user_activity_daily yet.
         unrolled = conn.execute(
             "SELECT COALESCE(SUM(duration_seconds), 0) / 60 as extra "
             "FROM voice_sessions "
@@ -546,7 +547,17 @@ def get_user_stats(guild_id: int, user_id: int, days: int) -> dict:
             "  )",
             (guild_id, user_id, _days_ago(days), guild_id, user_id),
         ).fetchone()
-        total_voice = totals["voice"] + (unrolled["extra"] or 0)
+
+        # Currently-active sessions (left_at IS NULL means user is still in voice).
+        # julianday arithmetic gives elapsed seconds since joining.
+        active = conn.execute(
+            "SELECT COALESCE(SUM(CAST((julianday('now') - julianday(joined_at)) * 86400 AS INTEGER)), 0) / 60 as mins "
+            "FROM voice_sessions "
+            "WHERE guild_id = ? AND user_id = ? AND left_at IS NULL",
+            (guild_id, user_id),
+        ).fetchone()
+
+        total_voice = totals["voice"] + (unrolled["extra"] or 0) + (active["mins"] or 0)
         top_channel = conn.execute(
             "SELECT channel_id, COUNT(*) as c FROM message_events "
             "WHERE guild_id = ? AND user_id = ? AND recorded_at >= ? "
