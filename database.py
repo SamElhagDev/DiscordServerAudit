@@ -164,19 +164,28 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_channel_activity_channel_date
                     ON channel_activity_daily(guild_id, channel_id, date);
             """)
-        # Strip +00:00 / Z timezone suffixes from all timestamp columns so that
-        # SQLite's strftime() and date() functions can parse them correctly.
-        _TIMESTAMP_COLS = [
-            ("message_events",  "recorded_at"),
-            ("voice_sessions",  "joined_at"),
-            ("voice_sessions",  "left_at"),
-            ("member_events",   "recorded_at"),
-            ("member_snapshots","recorded_at"),
-            ("audit_runs",      "run_at"),
-            ("bulk_task_log",   "performed_at"),
-            ("scheduler_state", "last_run"),
-        ]
-        total_fixed = 0
+        logger.info("Database schema ready")
+        _migrate_timestamps()
+        logger.info("Database initialised successfully")
+    except Exception:
+        logger.critical("Failed to initialise database at %s", DB_PATH, exc_info=True)
+        raise
+
+
+def _migrate_timestamps():
+    """Strip +00:00 / Z suffixes so SQLite strftime() can parse all timestamps."""
+    _TIMESTAMP_COLS = [
+        ("message_events",   "recorded_at"),
+        ("voice_sessions",   "joined_at"),
+        ("voice_sessions",   "left_at"),
+        ("member_events",    "recorded_at"),
+        ("member_snapshots", "recorded_at"),
+        ("audit_runs",       "run_at"),
+        ("bulk_task_log",    "performed_at"),
+        ("scheduler_state",  "last_run"),
+    ]
+    total_fixed = 0
+    with get_conn() as conn:
         for table, col in _TIMESTAMP_COLS:
             cur = conn.execute(
                 f"UPDATE {table} SET {col} = substr({col}, 1, 19) "
@@ -185,13 +194,10 @@ def init_db():
             if cur.rowcount:
                 total_fixed += cur.rowcount
                 logger.info("Migrated %d rows in %s.%s (stripped tz suffix)", cur.rowcount, table, col)
-        if total_fixed:
-            logger.info("Timestamp migration complete: %d rows updated", total_fixed)
-
-        logger.info("Database initialised successfully")
-    except Exception:
-        logger.critical("Failed to initialise database at %s", DB_PATH, exc_info=True)
-        raise
+    if total_fixed:
+        logger.info("Timestamp migration complete: %d rows updated", total_fixed)
+    else:
+        logger.debug("Timestamp migration: nothing to update")
 
 
 @contextmanager
@@ -533,7 +539,7 @@ def get_peak_hours(guild_id: int, days: int):
     cutoff = _days_ago(days)
     with get_conn() as conn:
         return conn.execute(
-            "SELECT CAST(strftime('%%H', recorded_at) AS INTEGER) as hour, COUNT(*) as count "
+            "SELECT CAST(strftime('%%H', substr(recorded_at, 1, 19)) AS INTEGER) as hour, COUNT(*) as count "
             "FROM message_events WHERE guild_id = ? AND recorded_at >= ? "
             "GROUP BY hour ORDER BY hour",
             (guild_id, cutoff),
@@ -637,7 +643,7 @@ def get_channel_stats(guild_id: int, channel_id: int, days: int) -> dict:
             (guild_id, channel_id, cutoff_date),
         ).fetchall()
         peak_hours = conn.execute(
-            "SELECT CAST(strftime('%%H', recorded_at) AS INTEGER) as hour, COUNT(*) as count "
+            "SELECT CAST(strftime('%%H', substr(recorded_at, 1, 19)) AS INTEGER) as hour, COUNT(*) as count "
             "FROM message_events WHERE guild_id = ? AND channel_id = ? AND recorded_at >= ? "
             "GROUP BY hour ORDER BY count DESC LIMIT 1",
             (guild_id, channel_id, cutoff),
