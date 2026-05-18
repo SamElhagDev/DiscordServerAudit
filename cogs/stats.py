@@ -182,7 +182,10 @@ class Stats(commands.Cog):
 
             last_run = database.get_last_run(f"stats_rollup_{guild.id}")
             if last_run:
-                first_missed = (last_run.date() + datetime.timedelta(days=1))
+                # Use last_run.date() without +1: set_last_run stores the execution timestamp
+                # (e.g. May 17), not the last processed date (May 16). Adding 1 would jump to
+                # May 18 and permanently skip May 17's raw data.
+                first_missed = last_run.date()
             else:
                 first_missed = yesterday
 
