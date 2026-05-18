@@ -314,6 +314,22 @@ def log_member_event(guild_id: int, user_id: int, event_type: str):
     logger.debug("Member event: guild=%s user=%s type=%s", guild_id, user_id, event_type)
 
 
+def bulk_log_message_events(events: list[tuple]):
+    with get_conn() as conn:
+        conn.executemany(
+            "INSERT INTO message_events (guild_id, channel_id, user_id, recorded_at, word_count) VALUES (?, ?, ?, ?, ?)",
+            events,
+        )
+
+
+def bulk_log_member_events(events: list[tuple]):
+    with get_conn() as conn:
+        conn.executemany(
+            "INSERT INTO member_events (guild_id, user_id, event_type, recorded_at) VALUES (?, ?, ?, ?)",
+            events,
+        )
+
+
 def save_member_snapshot(guild_id: int, total: int, online: int, bots: int, boosts: int, tier: int):
     with get_conn() as conn:
         conn.execute(

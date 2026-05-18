@@ -97,6 +97,7 @@ class Stats(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._scanning = False
 
     async def cog_load(self):
         database.close_orphaned_voice_sessions()
@@ -748,6 +749,162 @@ class Stats(commands.Cog):
         e2.add_field(name="\U0001f504 Reactions", value=f"{summary['reactions']:,}", inline=True)
 
         await ctx.send(embeds=[e1, e2])
+
+
+    @commands.hybrid_command(name="scan", description="Backfill stats database with server message history")
+    @commands.guild_only()
+    async def scan_cmd(self, ctx: commands.Context, days: int = 30):
+        days = max(1, min(days, 365))
+
+        if self._scanning:
+            embed = discord.Embed(
+                title="\U0001f50d Scan In Progress",
+                description="A scan is already running. Please wait for it to complete.",
+                color=COLOR_NEGATIVE,
+            )
+            await ctx.send(embed=embed)
+            return
+
+        self._scanning = True
+        try:
+            await self._run_scan(ctx, days)
+        finally:
+            self._scanning = False
+
+    async def _run_scan(self, ctx: commands.Context, days: int):
+        await ctx.defer()
+        guild = ctx.guild
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+        cutoff_iso = cutoff.isoformat()
+
+        embed = discord.Embed(
+            title="\U0001f50d Scanning Server History",
+            description=f"Scanning the last **{days} days** of message history...\nThis may take a while for large servers.",
+            color=COLOR_NEUTRAL,
+        )
+        embed.add_field(name="Status", value="Starting...", inline=False)
+        progress_msg = await ctx.send(embed=embed)
+
+        with database.get_conn() as conn:
+            conn.execute(
+                "DELETE FROM message_events WHERE guild_id = ? AND recorded_at >= ?",
+                (guild.id, cutoff_iso),
+            )
+            conn.execute(
+                "DELETE FROM member_events WHERE guild_id = ? AND recorded_at >= ?",
+                (guild.id, cutoff_iso),
+            )
+
+        text_channels = [
+            ch for ch in guild.text_channels
+            if ch.permissions_for(guild.me).read_message_history
+        ]
+        excluded_channels = config.get("stats.excluded_channels", [])
+        excluded_users = config.get("stats.excluded_users", [])
+        exclude_bots = config.get("stats.exclude_bots", True)
+
+        total_messages = 0
+        total_channels = 0
+        skipped_channels = 0
+        batch = []
+        BATCH_SIZE = 500
+
+        for i, channel in enumerate(text_channels):
+            if channel.id in excluded_channels:
+                skipped_channels += 1
+                continue
+            try:
+                async for message in channel.history(limit=None, after=cutoff, oldest_first=True):
+                    if message.author.bot and exclude_bots:
+                        continue
+                    if message.author.id in excluded_users:
+                        continue
+                    word_count = len(message.content.split()) if message.content else 0
+                    batch.append((guild.id, channel.id, message.author.id, message.created_at.isoformat(), word_count))
+
+                    if len(batch) >= BATCH_SIZE:
+                        database.bulk_log_message_events(batch)
+                        total_messages += len(batch)
+                        batch.clear()
+
+                total_channels += 1
+            except discord.Forbidden:
+                skipped_channels += 1
+                continue
+            except Exception as e:
+                logger.warning("Error scanning channel #%s: %s", channel.name, e)
+                skipped_channels += 1
+                continue
+
+            if (i + 1) % 5 == 0 or i == len(text_channels) - 1:
+                embed.set_field_at(
+                    0, name="Status",
+                    value=f"\U0001f4c2 Channels: {total_channels}/{len(text_channels)} | \U0001f4ac Messages: {total_messages:,}",
+                    inline=False,
+                )
+                try:
+                    await progress_msg.edit(embed=embed)
+                except discord.HTTPException:
+                    pass
+
+        if batch:
+            database.bulk_log_message_events(batch)
+            total_messages += len(batch)
+            batch.clear()
+
+        embed.set_field_at(0, name="Status", value="\U0001f465 Processing members...", inline=False)
+        try:
+            await progress_msg.edit(embed=embed)
+        except discord.HTTPException:
+            pass
+
+        database.save_member_snapshot(
+            guild.id,
+            guild.member_count or 0,
+            sum(1 for m in guild.members if m.status != discord.Status.offline),
+            sum(1 for m in guild.members if m.bot),
+            guild.premium_subscription_count or 0,
+            guild.premium_tier,
+        )
+
+        member_events_batch = []
+        for member in guild.members:
+            if member.joined_at and member.joined_at >= cutoff:
+                member_events_batch.append((guild.id, member.id, "join", member.joined_at.isoformat()))
+        if member_events_batch:
+            database.bulk_log_member_events(member_events_batch)
+        member_joins = len(member_events_batch)
+
+        embed.set_field_at(0, name="Status", value="\U0001f4ca Running daily rollups...", inline=False)
+        try:
+            await progress_msg.edit(embed=embed)
+        except discord.HTTPException:
+            pass
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for d in range(days):
+            date_str = (now - datetime.timedelta(days=d)).strftime("%Y-%m-%d")
+            database.rollup_user_activity(guild.id, date_str)
+            database.rollup_channel_activity(guild.id, date_str)
+
+        result = discord.Embed(
+            title="✅ Scan Complete",
+            description=f"Successfully scanned **{days} days** of server history.",
+            color=COLOR_POSITIVE,
+        )
+        result.add_field(name="\U0001f4ac Messages Logged", value=f"{total_messages:,}", inline=True)
+        result.add_field(name="\U0001f4c2 Channels Scanned", value=str(total_channels), inline=True)
+        result.add_field(name="⏭️ Channels Skipped", value=str(skipped_channels), inline=True)
+        result.add_field(name="\U0001f465 Member Joins Logged", value=str(member_joins), inline=True)
+        result.add_field(name="\U0001f4ca Days Rolled Up", value=str(days), inline=True)
+        result.add_field(name="\U0001f4f8 Snapshot Taken", value="Yes", inline=True)
+        result.set_footer(text="Stats commands now have historical data! Try /stats")
+
+        await progress_msg.edit(embed=result)
+        logger.info(
+            "Scan complete: guild=%s days=%d messages=%d channels=%d members=%d",
+            guild.name, days, total_messages, total_channels, member_joins,
+        )
 
 
 async def setup(bot: commands.Bot):
