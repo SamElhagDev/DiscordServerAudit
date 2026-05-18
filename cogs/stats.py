@@ -48,6 +48,25 @@ def _build_quickchart_url(chart_config: dict) -> str:
     return f"https://quickchart.io/chart?c={encoded}&w=500&h=300&bkg={urllib.parse.quote(CHART_BG)}"
 
 
+async def _chart_url(chart_config: dict) -> str:
+    url = _build_quickchart_url(chart_config)
+    if len(url) <= 2048:
+        return url
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://quickchart.io/chart/create",
+                json={"chart": chart_config, "width": 500, "height": 300, "backgroundColor": CHART_BG},
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("url", "")
+    except Exception:
+        logger.warning("Failed to create short chart URL", exc_info=True)
+    return url
+
+
 def _trend_indicator(current: float, previous: float) -> str:
     if previous == 0:
         return "\U0001f4c8 ↑ new" if current > 0 else "➡️ ─ 0%"
@@ -147,6 +166,8 @@ class Stats(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        if self._scanning:
+            return
         if not config.get("stats.enabled", True):
             return
         if message.guild is None:
@@ -178,12 +199,12 @@ class Stats(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        if config.get("stats.enabled", True):
+        if not self._scanning and config.get("stats.enabled", True):
             database.log_member_event(member.guild.id, member.id, "join")
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
-        if config.get("stats.enabled", True):
+        if not self._scanning and config.get("stats.enabled", True):
             database.log_member_event(member.guild.id, member.id, "leave")
 
     @commands.Cog.listener()
@@ -290,14 +311,17 @@ class Stats(commands.Cog):
             },
             "options": {
                 "scales": {
-                    "y": {"position": "left", "ticks": {"fontColor": CHART_TEXT}, "gridLines": {"color": CHART_GRID}},
-                    "y1": {"position": "right", "ticks": {"fontColor": CHART_TEXT}, "gridLines": {"drawOnChartArea": False}},
+                    "yAxes": [
+                        {"id": "y", "position": "left", "ticks": {"fontColor": CHART_TEXT}, "gridLines": {"color": CHART_GRID}},
+                        {"id": "y1", "position": "right", "ticks": {"fontColor": CHART_TEXT}, "gridLines": {"drawOnChartArea": False}},
+                    ],
+                    "xAxes": [{"ticks": {"fontColor": CHART_TEXT}, "gridLines": {"color": CHART_GRID}}],
                 },
                 "legend": {"labels": {"fontColor": CHART_TEXT}},
             },
         }
         e4 = discord.Embed(title="\U0001f4c8 Daily Activity", color=COLOR_NEUTRAL)
-        e4.set_image(url=_build_quickchart_url(chart_cfg))
+        e4.set_image(url=await _chart_url(chart_cfg))
 
         await ctx.send(embeds=[e1, e2, e3, e4])
 
@@ -366,7 +390,7 @@ class Stats(commands.Cog):
             "options": {"legend": {"labels": {"fontColor": CHART_TEXT}}, "scales": {"yAxes": [{"ticks": {"fontColor": CHART_TEXT, "beginAtZero": True}, "gridLines": {"color": CHART_GRID}}], "xAxes": [{"ticks": {"fontColor": CHART_TEXT}, "gridLines": {"color": CHART_GRID}}]}},
         }
         e2 = discord.Embed(title="\U0001f4c8 Daily Activity", description=desc, color=color)
-        e2.set_image(url=_build_quickchart_url(chart_cfg))
+        e2.set_image(url=await _chart_url(chart_cfg))
 
         # Embed 3: Channel breakdown
         total_msgs = sum(v for _, v in data["channel_breakdown"])
@@ -459,7 +483,7 @@ class Stats(commands.Cog):
             "options": {"legend": {"labels": {"fontColor": CHART_TEXT}}, "scales": {"yAxes": [{"ticks": {"fontColor": CHART_TEXT, "beginAtZero": True}, "gridLines": {"color": CHART_GRID}}], "xAxes": [{"ticks": {"fontColor": CHART_TEXT}, "gridLines": {"color": CHART_GRID}}]}},
         }
         e3 = discord.Embed(title="\U0001f4c8 Daily Message Volume", color=color)
-        e3.set_image(url=_build_quickchart_url(chart_cfg))
+        e3.set_image(url=await _chart_url(chart_cfg))
 
         await ctx.send(embeds=[e1, e2, e3])
 
@@ -549,7 +573,7 @@ class Stats(commands.Cog):
             "options": {"legend": {"labels": {"fontColor": CHART_TEXT}}, "scales": {"yAxes": [{"ticks": {"fontColor": CHART_TEXT, "beginAtZero": True}, "gridLines": {"color": CHART_GRID}}], "xAxes": [{"ticks": {"fontColor": CHART_TEXT}, "gridLines": {"color": CHART_GRID}}]}},
         }
         e4 = discord.Embed(title="\U0001f4c8 Daily Voice Hours", color=COLOR_VOICE)
-        e4.set_image(url=_build_quickchart_url(chart_cfg))
+        e4.set_image(url=await _chart_url(chart_cfg))
 
         await ctx.send(embeds=[e1, e2, e3, e4])
 
@@ -607,7 +631,7 @@ class Stats(commands.Cog):
             "options": {"legend": {"labels": {"fontColor": CHART_TEXT}}, "scales": {"yAxes": [{"ticks": {"fontColor": CHART_TEXT, "min": min_y}, "gridLines": {"color": CHART_GRID}}], "xAxes": [{"ticks": {"fontColor": CHART_TEXT}, "gridLines": {"color": CHART_GRID}}]}},
         }
         e2 = discord.Embed(title="\U0001f4c8 Member Count Over Time", color=color)
-        e2.set_image(url=_build_quickchart_url(chart_cfg))
+        e2.set_image(url=await _chart_url(chart_cfg))
 
         # Embed 3: Daily breakdown table
         table_lines = ["Date          Joins  Leaves  Net", "─" * 38]
@@ -640,7 +664,7 @@ class Stats(commands.Cog):
             "options": {"legend": {"labels": {"fontColor": CHART_TEXT}}, "scales": {"yAxes": [{"ticks": {"fontColor": CHART_TEXT, "beginAtZero": True}, "gridLines": {"color": CHART_GRID}}], "xAxes": [{"ticks": {"fontColor": CHART_TEXT}, "gridLines": {"color": CHART_GRID}}]}},
         }
         e4 = discord.Embed(title="\U0001f4ca Joins vs Leaves", color=color)
-        e4.set_image(url=_build_quickchart_url(chart_cfg2))
+        e4.set_image(url=await _chart_url(chart_cfg2))
 
         await ctx.send(embeds=[e1, e2, e3, e4])
 
