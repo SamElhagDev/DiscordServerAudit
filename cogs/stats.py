@@ -974,6 +974,97 @@ class Stats(commands.Cog):
         await ctx.send(embeds=[e1, e2])
 
 
+    @commands.hybrid_command(name="dbcheck", description="Diagnose message_events for duplicates and data consistency")
+    @commands.guild_only()
+    async def dbcheck_cmd(self, ctx: commands.Context):
+        """Check the stats database for duplicate rows and compare raw vs rolled-up totals."""
+        guild_id = ctx.guild.id
+        with database.get_conn() as conn:
+            raw_total = conn.execute(
+                "SELECT COUNT(*) as c FROM message_events WHERE guild_id = ?", (guild_id,)
+            ).fetchone()["c"]
+
+            dupe_groups = conn.execute(
+                "SELECT COUNT(*) as c FROM ("
+                "  SELECT 1 FROM message_events WHERE guild_id = ?"
+                "  GROUP BY channel_id, user_id, recorded_at HAVING COUNT(*) > 1"
+                ")", (guild_id,)
+            ).fetchone()["c"]
+
+            dupe_rows = conn.execute(
+                "SELECT COALESCE(SUM(n - 1), 0) as c FROM ("
+                "  SELECT COUNT(*) as n FROM message_events WHERE guild_id = ?"
+                "  GROUP BY channel_id, user_id, recorded_at HAVING COUNT(*) > 1"
+                ")", (guild_id,)
+            ).fetchone()["c"]
+
+            rolled_msgs = conn.execute(
+                "SELECT COALESCE(SUM(message_count), 0) as c FROM user_activity_daily WHERE guild_id = ?",
+                (guild_id,),
+            ).fetchone()["c"]
+
+            chan_msgs = conn.execute(
+                "SELECT COALESCE(SUM(message_count), 0) as c FROM channel_activity_daily WHERE guild_id = ?",
+                (guild_id,),
+            ).fetchone()["c"]
+
+            top_channels = conn.execute(
+                "SELECT channel_id, COUNT(*) as c FROM message_events WHERE guild_id = ?"
+                " GROUP BY channel_id ORDER BY c DESC LIMIT 10",
+                (guild_id,),
+            ).fetchall()
+
+        lines = [
+            f"**Raw message_events:** {raw_total:,}",
+            f"**Duplicate groups (same channel+user+timestamp):** {dupe_groups:,}",
+            f"**Extra rows from duplicates:** {dupe_rows:,}",
+            f"**user_activity_daily SUM(message_count):** {rolled_msgs:,}",
+            f"**channel_activity_daily SUM(message_count):** {chan_msgs:,}",
+            "",
+            "**Top 10 channels (raw events):**",
+        ]
+        for row in top_channels:
+            ch = ctx.guild.get_channel(row["channel_id"])
+            name = f"#{ch.name}" if ch else str(row["channel_id"])
+            lines.append(f"  {name}: {row['c']:,}")
+
+        embed = discord.Embed(
+            title="Database Consistency Check",
+            description="\n".join(lines),
+            color=COLOR_NEUTRAL,
+        )
+        if dupe_rows > 0:
+            embed.set_footer(text=f"Found {dupe_rows:,} duplicate rows — run !dbclean to remove them")
+        else:
+            embed.set_footer(text="No duplicates found")
+        await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name="dbclean", description="Remove duplicate message_events rows")
+    @commands.guild_only()
+    async def dbclean_cmd(self, ctx: commands.Context):
+        """Delete duplicate message_events rows, keeping one copy of each."""
+        guild_id = ctx.guild.id
+        with database.get_conn() as conn:
+            deleted = conn.execute(
+                "DELETE FROM message_events WHERE guild_id = ? AND rowid NOT IN ("
+                "  SELECT MIN(rowid) FROM message_events WHERE guild_id = ?"
+                "  GROUP BY channel_id, user_id, recorded_at"
+                ")", (guild_id, guild_id),
+            ).rowcount
+        if deleted:
+            embed = discord.Embed(
+                title="Database Cleaned",
+                description=f"Removed **{deleted:,}** duplicate rows from message_events.",
+                color=COLOR_POSITIVE,
+            )
+        else:
+            embed = discord.Embed(
+                title="Database Clean",
+                description="No duplicates found — database is clean.",
+                color=COLOR_POSITIVE,
+            )
+        await ctx.send(embed=embed)
+
     @commands.hybrid_command(name="scan", description="Backfill stats database with server message history")
     @commands.guild_only()
     async def scan_cmd(self, ctx: commands.Context, days: int = 30):
