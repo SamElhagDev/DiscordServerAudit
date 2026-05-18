@@ -486,9 +486,12 @@ def get_server_stats_summary(guild_id: int, days: int) -> dict:
     cutoff = _days_ago(days)
     cutoff_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
     with get_conn() as conn:
+        # Use the rolled-up table so total_messages uses the same source/cutoff as
+        # get_top_channels / get_top_users — message_events is pruned independently
+        # and uses a datetime cutoff, which creates an unavoidable mismatch.
         msgs = conn.execute(
-            "SELECT COUNT(*) as c FROM message_events WHERE guild_id = ? AND recorded_at >= ?",
-            (guild_id, cutoff),
+            "SELECT COALESCE(SUM(message_count), 0) as c FROM user_activity_daily WHERE guild_id = ? AND date >= ?",
+            (guild_id, cutoff_date),
         ).fetchone()["c"]
         voice = conn.execute(
             "SELECT COALESCE(SUM(duration_seconds), 0) as s FROM voice_sessions WHERE guild_id = ? AND joined_at >= ? AND duration_seconds IS NOT NULL",
@@ -541,7 +544,7 @@ def get_peak_hours(guild_id: int, days: int):
         return conn.execute(
             "SELECT CAST(substr(recorded_at, 12, 2) AS INTEGER) as hour, COUNT(*) as count "
             "FROM message_events WHERE guild_id = ? AND recorded_at >= ? "
-            "GROUP BY hour ORDER BY hour",
+            "GROUP BY hour ORDER BY count DESC",
             (guild_id, cutoff),
         ).fetchall()
 

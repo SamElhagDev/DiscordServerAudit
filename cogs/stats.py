@@ -2,12 +2,26 @@ import json
 import logging
 import urllib.parse
 import datetime
+import zoneinfo
 
 import discord
 from discord.ext import commands
 
 import config
 import database
+
+_ET = zoneinfo.ZoneInfo("America/New_York")
+
+
+def _utc_hour_to_et(hour: int) -> str:
+    """Convert a UTC hour (0-23) to an ET display string, e.g. '09:00 EDT'."""
+    today = datetime.date.today()
+    utc_dt = datetime.datetime(today.year, today.month, today.day, hour, 0, 0,
+                               tzinfo=datetime.timezone.utc)
+    et_dt = utc_dt.astimezone(_ET)
+    offset_h = int(et_dt.utcoffset().total_seconds() // 3600)
+    abbr = "EST" if offset_h == -5 else "EDT"
+    return f"{et_dt.hour:02d}:00 {abbr}"
 
 logger = logging.getLogger(__name__)
 
@@ -558,7 +572,7 @@ class Stats(commands.Cog):
         half = days // 2
         prev = database.get_channel_stats(ctx.guild.id, channel.id, half) if half > 0 else {"message_count": 0}
         color = _embed_color_for_trend(data["message_count"], prev["message_count"])
-        peak_hour = f"{data['peak_hour']}:00 UTC" if data["peak_hour"] is not None else "N/A"
+        peak_hour = _utc_hour_to_et(data["peak_hour"]) if data["peak_hour"] is not None else "N/A"
 
         daily_msgs = [d.get("message_count", 0) for d in data["daily"]]
         busiest_day = "N/A"
@@ -796,6 +810,34 @@ class Stats(commands.Cog):
 
         await ctx.send(embeds=[e1, e2, e3, e4])
 
+    @commands.hybrid_command(name="peakhours", description="Show full message activity distribution by hour (UTC)")
+    @commands.guild_only()
+    async def peakhours_cmd(self, ctx: commands.Context, days: int = 30):
+        """Show all 24 hours ranked by message count so you can verify peak-hour data."""
+        days = max(1, days)
+        rows = database.get_peak_hours(ctx.guild.id, days)
+        if not rows:
+            await ctx.send("No message data for that period.")
+            return
+
+        total = sum(r["count"] for r in rows)
+        by_hour = {r["hour"]: r["count"] for r in rows}
+        lines = []
+        for h in range(24):
+            count = by_hour.get(h, 0)
+            pct = (count / total * 100) if total else 0
+            bar = "█" * int(pct / 2)
+            et_label = _utc_hour_to_et(h)
+            lines.append(f"{et_label:<11}  {bar:<50} {count:>5} ({pct:4.1f}%)")
+
+        embed = discord.Embed(
+            title=f"Peak Hours — Last {days} Days (Eastern Time)",
+            description=f"```\n{''.join(f'{l}{chr(10)}' for l in lines)}```",
+            color=COLOR_NEUTRAL,
+        )
+        embed.set_footer(text=f"Total messages in window: {total:,}")
+        await ctx.send(embed=embed)
+
     @commands.hybrid_command(name="insights", description="AI-powered server trend analysis")
     @commands.guild_only()
     async def insights_cmd(self, ctx: commands.Context, days: int = 7):
@@ -854,6 +896,11 @@ class Stats(commands.Cog):
             "3. User engagement observations\n"
             "4. Channel health assessment\n"
             "5. 3-5 specific, actionable recommendations for improving server health\n\n"
+            "Important context: all peak_hours values are in UTC. "
+            "This server's users are in Eastern Time (ET). "
+            "When referencing peak hours, convert to ET by subtracting 4 hours (EDT, Mar–Nov) "
+            "or 5 hours (EST, Nov–Mar). For example UTC 14 = 10:00 EDT or 09:00 EST. "
+            "Always express times as ET, not UTC.\n\n"
             "Be concise, specific, and use the actual numbers. Under 500 words.\n\n"
             f"Stats:\n{_json.dumps(stats_dict, indent=2)}"
         )
@@ -897,7 +944,7 @@ class Stats(commands.Cog):
         e2.add_field(name="\U0001f465 Active Users", value=str(summary["active_users"]), inline=True)
         e2.add_field(name="\U0001f4c8 Growth", value=f"+{events['joins']} / -{events['leaves']}", inline=True)
         peak = max(peak_hours, key=lambda r: r["count"])["hour"] if peak_hours else "N/A"
-        e2.add_field(name="\U0001f525 Peak Hour", value=f"{peak}:00 UTC" if isinstance(peak, int) else peak, inline=True)
+        e2.add_field(name="\U0001f525 Peak Hour", value=_utc_hour_to_et(peak) if isinstance(peak, int) else peak, inline=True)
         e2.add_field(name="\U0001f504 Reactions", value=f"{summary['reactions']:,}", inline=True)
 
         await ctx.send(embeds=[e1, e2])
@@ -926,8 +973,13 @@ class Stats(commands.Cog):
     async def _run_scan(self, ctx: commands.Context, days: int):
         await ctx.defer()
         guild = ctx.guild
-        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
-        cutoff_iso = cutoff.isoformat()
+        # Round to midnight so every day in the window is a full 24 hours.
+        # Without this the oldest day is partial (hours 0..scan_hour-1 missing),
+        # which biases peak-hour counts toward whichever hour the scan was run.
+        cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
         logger.info("Scan starting: guild=%r (ID=%s) days=%d cutoff=%s", guild.name, guild.id, days, cutoff_iso)
 
         embed = discord.Embed(
@@ -975,11 +1027,12 @@ class Stats(commands.Cog):
                     if message.author.id in excluded_users:
                         continue
                     word_count = len(message.content.split()) if message.content else 0
-                    batch.append((guild.id, channel.id, message.author.id, message.created_at.strftime("%Y-%m-%dT%H:%M:%S"), word_count))
+                    created_utc = message.created_at.astimezone(datetime.timezone.utc)
+                    batch.append((guild.id, channel.id, message.author.id, created_utc.strftime("%Y-%m-%dT%H:%M:%S"), word_count))
 
                     if message.reactions:
                         r_count = sum(r.count for r in message.reactions)
-                        date_key = message.created_at.strftime("%Y-%m-%d")
+                        date_key = created_utc.strftime("%Y-%m-%d")
                         key = (message.author.id, date_key)
                         reaction_counts[key] = reaction_counts.get(key, 0) + r_count
                         total_reactions += r_count
@@ -1033,7 +1086,8 @@ class Stats(commands.Cog):
         member_events_batch = []
         for member in guild.members:
             if member.joined_at and member.joined_at >= cutoff:
-                member_events_batch.append((guild.id, member.id, "join", member.joined_at.strftime("%Y-%m-%dT%H:%M:%S")))
+                joined_utc = member.joined_at.astimezone(datetime.timezone.utc)
+                member_events_batch.append((guild.id, member.id, "join", joined_utc.strftime("%Y-%m-%dT%H:%M:%S")))
         if member_events_batch:
             database.bulk_log_member_events(member_events_batch)
         member_joins = len(member_events_batch)
@@ -1043,8 +1097,8 @@ class Stats(commands.Cog):
                 for (user_id, date), count in reaction_counts.items():
                     conn.execute(
                         "INSERT INTO user_activity_daily (guild_id, user_id, date, reactions_received) VALUES (?, ?, ?, ?) "
-                        "ON CONFLICT(guild_id, user_id, date) DO UPDATE SET reactions_received = reactions_received + ?",
-                        (guild.id, user_id, date, count, count),
+                        "ON CONFLICT(guild_id, user_id, date) DO UPDATE SET reactions_received = excluded.reactions_received",
+                        (guild.id, user_id, date, count),
                     )
 
         embed.set_field_at(0, name="Status", value="\U0001f4ca Running daily rollups...", inline=False)
@@ -1054,7 +1108,7 @@ class Stats(commands.Cog):
             pass
 
         now = datetime.datetime.now(datetime.timezone.utc)
-        for d in range(days):
+        for d in range(days + 1):
             date_str = (now - datetime.timedelta(days=d)).strftime("%Y-%m-%d")
             database.rollup_user_activity(guild.id, date_str)
             database.rollup_channel_activity(guild.id, date_str)
