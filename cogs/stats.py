@@ -117,10 +117,17 @@ class Stats(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._scanning = False
+        self._scheduler_registered = False
 
     async def cog_load(self):
         database.close_orphaned_voice_sessions()
         logger.info("Stats cog loaded — orphaned voice sessions closed")
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if self._scheduler_registered:
+            return
+        self._scheduler_registered = True
 
         for guild in self.bot.guilds:
             snap_interval = config.get("stats.snapshot_interval_hours", 1)
@@ -217,6 +224,22 @@ class Stats(commands.Cog):
         if config.get("stats.enabled", True):
             database.log_member_event(guild.id, user.id, "unban")
 
+    async def _resolve_message_author(self, payload: discord.RawReactionActionEvent) -> int | None:
+        author_id = getattr(payload, "message_author_id", None)
+        if author_id:
+            return author_id
+        cached = discord.utils.get(self.bot.cached_messages, id=payload.message_id)
+        if cached:
+            return cached.author.id
+        try:
+            channel = self.bot.get_channel(payload.channel_id)
+            if channel:
+                msg = await channel.fetch_message(payload.message_id)
+                return msg.author.id
+        except Exception:
+            pass
+        return None
+
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         if not config.get("stats.enabled", True) or not config.get("stats.track_reactions", True):
@@ -225,7 +248,7 @@ class Stats(commands.Cog):
             return
         if payload.member and payload.member.bot and config.get("stats.exclude_bots", True):
             return
-        author_id = getattr(payload, "message_author_id", None)
+        author_id = await self._resolve_message_author(payload)
         database.increment_reaction(payload.guild_id, payload.user_id, author_id)
 
     @commands.Cog.listener()
@@ -234,7 +257,7 @@ class Stats(commands.Cog):
             return
         if payload.guild_id is None:
             return
-        author_id = getattr(payload, "message_author_id", None)
+        author_id = await self._resolve_message_author(payload)
         database.decrement_reaction(payload.guild_id, payload.user_id, author_id)
 
     # ------------------------------------------------------------------
@@ -244,7 +267,7 @@ class Stats(commands.Cog):
     @commands.hybrid_command(name="stats", description="View server activity dashboard")
     @commands.guild_only()
     async def stats_cmd(self, ctx: commands.Context, days: int = 7):
-        days = max(1, min(days, 90))
+        days = max(1, days)
         summary = database.get_server_stats_summary(ctx.guild.id, days)
         top_users = database.get_top_users(ctx.guild.id, days)
         top_channels = database.get_top_channels(ctx.guild.id, days)
@@ -328,7 +351,7 @@ class Stats(commands.Cog):
     @commands.hybrid_command(name="userstats", description="View activity profile for a user")
     @commands.guild_only()
     async def userstats_cmd(self, ctx: commands.Context, member: discord.Member, days: int = 30):
-        days = max(1, min(days, 90))
+        days = max(1, days)
         data = database.get_user_stats(ctx.guild.id, member.id, days)
 
         if data["message_count"] == 0 and data["voice_minutes"] == 0:
@@ -414,7 +437,7 @@ class Stats(commands.Cog):
     @commands.hybrid_command(name="channelstats", description="View activity report for a channel")
     @commands.guild_only()
     async def channelstats_cmd(self, ctx: commands.Context, channel: discord.TextChannel, days: int = 30):
-        days = max(1, min(days, 90))
+        days = max(1, days)
         data = database.get_channel_stats(ctx.guild.id, channel.id, days)
 
         if data["message_count"] == 0:
@@ -490,7 +513,7 @@ class Stats(commands.Cog):
     @commands.hybrid_command(name="voicestats", description="View voice activity dashboard")
     @commands.guild_only()
     async def voicestats_cmd(self, ctx: commands.Context, days: int = 7):
-        days = max(1, min(days, 90))
+        days = max(1, days)
         voice_users = database.get_voice_leaderboard(ctx.guild.id, days)
         voice_channels = database.get_voice_channel_stats(ctx.guild.id, days)
         daily = database.get_daily_activity(ctx.guild.id, days)
@@ -580,7 +603,7 @@ class Stats(commands.Cog):
     @commands.hybrid_command(name="growth", description="View member growth trends")
     @commands.guild_only()
     async def growth_cmd(self, ctx: commands.Context, days: int = 30):
-        days = max(1, min(days, 365))
+        days = max(1, days)
         snapshots = database.get_member_growth(ctx.guild.id, days)
         events = database.get_member_events_summary(ctx.guild.id, days)
 
@@ -671,7 +694,7 @@ class Stats(commands.Cog):
     @commands.hybrid_command(name="insights", description="AI-powered server trend analysis")
     @commands.guild_only()
     async def insights_cmd(self, ctx: commands.Context, days: int = 7):
-        days = max(1, min(days, 90))
+        days = max(1, days)
         summary = database.get_server_stats_summary(ctx.guild.id, days)
 
         if summary["messages"] == 0 and summary["voice_seconds"] == 0:
@@ -778,7 +801,7 @@ class Stats(commands.Cog):
     @commands.hybrid_command(name="scan", description="Backfill stats database with server message history")
     @commands.guild_only()
     async def scan_cmd(self, ctx: commands.Context, days: int = 30):
-        days = max(1, min(days, 365))
+        days = max(1, days)
 
         if self._scanning:
             embed = discord.Embed(
@@ -828,9 +851,11 @@ class Stats(commands.Cog):
         exclude_bots = config.get("stats.exclude_bots", True)
 
         total_messages = 0
+        total_reactions = 0
         total_channels = 0
         skipped_channels = 0
         batch = []
+        reaction_counts = {}
         BATCH_SIZE = 500
 
         for i, channel in enumerate(text_channels):
@@ -845,6 +870,13 @@ class Stats(commands.Cog):
                         continue
                     word_count = len(message.content.split()) if message.content else 0
                     batch.append((guild.id, channel.id, message.author.id, message.created_at.isoformat(), word_count))
+
+                    if message.reactions:
+                        r_count = sum(r.count for r in message.reactions)
+                        date_key = message.created_at.strftime("%Y-%m-%d")
+                        key = (message.author.id, date_key)
+                        reaction_counts[key] = reaction_counts.get(key, 0) + r_count
+                        total_reactions += r_count
 
                     if len(batch) >= BATCH_SIZE:
                         database.bulk_log_message_events(batch)
@@ -899,6 +931,15 @@ class Stats(commands.Cog):
             database.bulk_log_member_events(member_events_batch)
         member_joins = len(member_events_batch)
 
+        if reaction_counts:
+            with database.get_conn() as conn:
+                for (user_id, date), count in reaction_counts.items():
+                    conn.execute(
+                        "INSERT INTO user_activity_daily (guild_id, user_id, date, reactions_received) VALUES (?, ?, ?, ?) "
+                        "ON CONFLICT(guild_id, user_id, date) DO UPDATE SET reactions_received = reactions_received + ?",
+                        (guild.id, user_id, date, count, count),
+                    )
+
         embed.set_field_at(0, name="Status", value="\U0001f4ca Running daily rollups...", inline=False)
         try:
             await progress_msg.edit(embed=embed)
@@ -919,8 +960,8 @@ class Stats(commands.Cog):
         result.add_field(name="\U0001f4ac Messages Logged", value=f"{total_messages:,}", inline=True)
         result.add_field(name="\U0001f4c2 Channels Scanned", value=str(total_channels), inline=True)
         result.add_field(name="⏭️ Channels Skipped", value=str(skipped_channels), inline=True)
+        result.add_field(name="\U0001f504 Reactions Found", value=f"{total_reactions:,}", inline=True)
         result.add_field(name="\U0001f465 Member Joins Logged", value=str(member_joins), inline=True)
-        result.add_field(name="\U0001f4ca Days Rolled Up", value=str(days), inline=True)
         result.add_field(name="\U0001f4f8 Snapshot Taken", value="Yes", inline=True)
         result.set_footer(text="Stats commands now have historical data! Try /stats")
 
