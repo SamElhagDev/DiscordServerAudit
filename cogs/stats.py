@@ -79,10 +79,7 @@ def _trend_indicator(current: float, previous: float) -> str:
 
 
 def _format_duration(minutes: int) -> str:
-    if minutes < 60:
-        return f"{minutes}m"
-    h, m = divmod(minutes, 60)
-    return f"{h}h {m}m"
+    return f"{minutes}m"
 
 
 def _format_seconds(seconds: int) -> str:

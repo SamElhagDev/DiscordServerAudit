@@ -535,6 +535,18 @@ def get_user_stats(guild_id: int, user_id: int, days: int) -> dict:
             "FROM user_activity_daily WHERE guild_id = ? AND user_id = ? AND date >= ?",
             (guild_id, user_id, cutoff_date),
         ).fetchone()
+
+        unrolled = conn.execute(
+            "SELECT COALESCE(SUM(duration_seconds), 0) / 60 as extra "
+            "FROM voice_sessions "
+            "WHERE guild_id = ? AND user_id = ? AND joined_at >= ? "
+            "  AND duration_seconds IS NOT NULL "
+            "  AND DATE(joined_at) NOT IN ("
+            "    SELECT date FROM user_activity_daily WHERE guild_id = ? AND user_id = ?"
+            "  )",
+            (guild_id, user_id, _days_ago(days), guild_id, user_id),
+        ).fetchone()
+        total_voice = totals["voice"] + (unrolled["extra"] or 0)
         top_channel = conn.execute(
             "SELECT channel_id, COUNT(*) as c FROM message_events "
             "WHERE guild_id = ? AND user_id = ? AND recorded_at >= ? "
@@ -554,7 +566,7 @@ def get_user_stats(guild_id: int, user_id: int, days: int) -> dict:
         ).fetchall()
     return {
         "message_count": totals["msgs"],
-        "voice_minutes": totals["voice"],
+        "voice_minutes": total_voice,
         "reactions_given": totals["rg"],
         "reactions_received": totals["rr"],
         "top_channel_id": top_channel["channel_id"] if top_channel else None,
