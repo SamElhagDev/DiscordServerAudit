@@ -440,8 +440,25 @@ class Stats(commands.Cog):
             await ctx.send(embed=embed)
             return
 
-        daily_msgs = [d.get("message_count", 0) for d in data["daily"]]
-        avg_msgs = data["message_count"] / days if days else 0
+        # Build a zero-filled date series for the full requested window.
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        all_dates = [
+            (now_utc - datetime.timedelta(days=days - i)).strftime("%Y-%m-%d")
+            for i in range(days + 1)
+        ]
+        daily_by_date = {d.get("date", ""): d.get("message_count", 0) for d in data["daily"]}
+        full_daily_msgs = [daily_by_date.get(d, 0) for d in all_dates]
+
+        # Determine actual data coverage for display.
+        first_data_date = data["daily"][0]["date"] if data["daily"] else None
+        if first_data_date:
+            first_dt = datetime.datetime.strptime(first_data_date, "%Y-%m-%d")
+            days_available = (now_utc.date() - first_dt.date()).days + 1
+        else:
+            days_available = 0
+        actual_span = max(days_available, 1)
+
+        avg_msgs = data["message_count"] / actual_span
         half = days // 2
         prev = database.get_user_stats(ctx.guild.id, member.id, half) if half > 0 else {"message_count": 0}
         color = _embed_color_for_trend(data["message_count"], prev["message_count"])
@@ -460,6 +477,12 @@ class Stats(commands.Cog):
                 ).fetchone()["c"]
             avg_session = data["voice_minutes"] // max(sess_count, 1)
 
+        data_range_note = (
+            f"Data from {first_data_date} — run `!scan {days}` for full history"
+            if first_data_date and days_available < days
+            else f"{days}-day window"
+        )
+
         # Embed 1: Profile
         e1 = discord.Embed(
             title=f"\U0001f4ca Stats for {member.display_name}",
@@ -475,15 +498,17 @@ class Stats(commands.Cog):
         e1.add_field(name="\U0001f4c8 Trend", value=_trend_indicator(data["message_count"], prev["message_count"]), inline=True)
         e1.add_field(name="\U0001f504 Reactions Received", value=f"{data['reactions_received']:,}", inline=True)
         e1.add_field(name="⏱️ Avg Voice Session", value=_format_duration(avg_session), inline=True)
+        e1.set_footer(text=data_range_note)
 
-        # Embed 2: Sparkline + chart
-        spark = _sparkline(daily_msgs)
-        peak_val = max(daily_msgs) if daily_msgs else 0
-        quiet_val = min(daily_msgs) if daily_msgs else 0
-        desc = f"```\nMessages per day (last {min(len(daily_msgs), 14)} days):\n{spark}\nAvg: {avg_msgs:.1f} | Peak: {peak_val} | Quiet: {quiet_val}\n```"
+        # Embed 2: Sparkline + chart — use zero-filled series so gaps show as 0 bars
+        chart_dates = all_dates[-14:]
+        vals = full_daily_msgs[-14:]
+        spark = _sparkline(full_daily_msgs)
+        peak_val = max(full_daily_msgs) if full_daily_msgs else 0
+        quiet_val = min(d for d in full_daily_msgs if d > 0) if any(full_daily_msgs) else 0
+        desc = f"```\nMessages per day (last 14 days):\n{spark}\nAvg: {avg_msgs:.1f}/day | Peak: {peak_val} | Quiet: {quiet_val}\n```"
 
-        dates = [d.get("date", "")[-5:] for d in data["daily"]][-14:]
-        vals = daily_msgs[-14:]
+        dates = [d[-5:] for d in chart_dates]
         chart_cfg = {
             "type": "bar",
             "data": {"labels": dates, "datasets": [{"label": "Messages", "data": vals, "backgroundColor": "rgba(52,152,219,0.7)"}]},
