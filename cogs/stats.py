@@ -140,6 +140,21 @@ class Stats(commands.Cog):
             )
             logger.info("Registered stats scheduler tasks for guild %r (ID=%s)", guild.name, guild.id)
 
+            # Open sessions for members already in voice when the bot connects.
+            # on_voice_state_update does not fire for pre-existing voice state on startup.
+            if not config.get("stats.enabled", True):
+                continue
+            exclude_bots = config.get("stats.exclude_bots", True)
+            resumed = 0
+            for vc in guild.voice_channels:
+                for member in vc.members:
+                    if member.bot and exclude_bots:
+                        continue
+                    database.start_voice_session(guild.id, vc.id, member.id)
+                    resumed += 1
+            if resumed:
+                logger.info("Opened %d voice sessions for members already in voice at startup (guild %r)", resumed, guild.name)
+
     # ------------------------------------------------------------------
     # Scheduler coroutines (T037-T038)
     # ------------------------------------------------------------------
