@@ -2,7 +2,6 @@ import json
 import logging
 import urllib.parse
 import datetime
-import zoneinfo
 
 import discord
 from discord.ext import commands
@@ -10,18 +9,43 @@ from discord.ext import commands
 import config
 import database
 
-_ET = zoneinfo.ZoneInfo("America/New_York")
+try:
+    import zoneinfo
+    _ET = zoneinfo.ZoneInfo("America/New_York")
+except Exception:
+    _ET = None
+
+
+def _et_offset() -> tuple[int, str]:
+    """Return (utc_offset_hours, abbreviation) for Eastern Time right now.
+    Used as fallback when tzdata is not installed."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    year = now.year
+    # DST starts 2nd Sunday in March at 07:00 UTC (= 02:00 EST)
+    mar1 = datetime.date(year, 3, 1)
+    first_sun_mar = mar1 + datetime.timedelta(days=(6 - mar1.weekday()) % 7)
+    dst_start = datetime.datetime(year, 3, first_sun_mar.day + 7, 7, 0, 0, tzinfo=datetime.timezone.utc)
+    # DST ends 1st Sunday in November at 06:00 UTC (= 02:00 EDT)
+    nov1 = datetime.date(year, 11, 1)
+    first_sun_nov = nov1 + datetime.timedelta(days=(6 - nov1.weekday()) % 7)
+    dst_end = datetime.datetime(year, 11, first_sun_nov.day, 6, 0, 0, tzinfo=datetime.timezone.utc)
+    if dst_start <= now < dst_end:
+        return -4, "EDT"
+    return -5, "EST"
 
 
 def _utc_hour_to_et(hour: int) -> str:
     """Convert a UTC hour (0-23) to an ET display string, e.g. '09:00 EDT'."""
-    today = datetime.date.today()
-    utc_dt = datetime.datetime(today.year, today.month, today.day, hour, 0, 0,
-                               tzinfo=datetime.timezone.utc)
-    et_dt = utc_dt.astimezone(_ET)
-    offset_h = int(et_dt.utcoffset().total_seconds() // 3600)
-    abbr = "EST" if offset_h == -5 else "EDT"
-    return f"{et_dt.hour:02d}:00 {abbr}"
+    if _ET is not None:
+        today = datetime.date.today()
+        utc_dt = datetime.datetime(today.year, today.month, today.day, hour, 0, 0,
+                                   tzinfo=datetime.timezone.utc)
+        et_dt = utc_dt.astimezone(_ET)
+        offset_h = int(et_dt.utcoffset().total_seconds() // 3600)
+        abbr = "EST" if offset_h == -5 else "EDT"
+        return f"{et_dt.hour:02d}:00 {abbr}"
+    offset, abbr = _et_offset()
+    return f"{(hour + offset) % 24:02d}:00 {abbr}"
 
 logger = logging.getLogger(__name__)
 
