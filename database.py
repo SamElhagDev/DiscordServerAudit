@@ -539,7 +539,7 @@ def get_peak_hours(guild_id: int, days: int):
     cutoff = _days_ago(days)
     with get_conn() as conn:
         return conn.execute(
-            "SELECT CAST(strftime('%%H', substr(recorded_at, 1, 19)) AS INTEGER) as hour, COUNT(*) as count "
+            "SELECT CAST(substr(recorded_at, 12, 2) AS INTEGER) as hour, COUNT(*) as count "
             "FROM message_events WHERE guild_id = ? AND recorded_at >= ? "
             "GROUP BY hour ORDER BY hour",
             (guild_id, cutoff),
@@ -643,7 +643,7 @@ def get_channel_stats(guild_id: int, channel_id: int, days: int) -> dict:
             (guild_id, channel_id, cutoff_date),
         ).fetchall()
         peak_hours = conn.execute(
-            "SELECT CAST(strftime('%%H', substr(recorded_at, 1, 19)) AS INTEGER) as hour, COUNT(*) as count "
+            "SELECT CAST(substr(recorded_at, 12, 2) AS INTEGER) as hour, COUNT(*) as count "
             "FROM message_events WHERE guild_id = ? AND channel_id = ? AND recorded_at >= ? "
             "GROUP BY hour ORDER BY count DESC LIMIT 1",
             (guild_id, channel_id, cutoff),
