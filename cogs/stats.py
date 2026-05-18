@@ -975,7 +975,7 @@ class Stats(commands.Cog):
                     if message.author.id in excluded_users:
                         continue
                     word_count = len(message.content.split()) if message.content else 0
-                    batch.append((guild.id, channel.id, message.author.id, message.created_at.isoformat(), word_count))
+                    batch.append((guild.id, channel.id, message.author.id, message.created_at.strftime("%Y-%m-%dT%H:%M:%S"), word_count))
 
                     if message.reactions:
                         r_count = sum(r.count for r in message.reactions)
@@ -1033,7 +1033,7 @@ class Stats(commands.Cog):
         member_events_batch = []
         for member in guild.members:
             if member.joined_at and member.joined_at >= cutoff:
-                member_events_batch.append((guild.id, member.id, "join", member.joined_at.isoformat()))
+                member_events_batch.append((guild.id, member.id, "join", member.joined_at.strftime("%Y-%m-%dT%H:%M:%S")))
         if member_events_batch:
             database.bulk_log_member_events(member_events_batch)
         member_joins = len(member_events_batch)

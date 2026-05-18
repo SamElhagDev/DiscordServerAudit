@@ -164,6 +164,30 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_channel_activity_channel_date
                     ON channel_activity_daily(guild_id, channel_id, date);
             """)
+        # Strip +00:00 / Z timezone suffixes from all timestamp columns so that
+        # SQLite's strftime() and date() functions can parse them correctly.
+        _TIMESTAMP_COLS = [
+            ("message_events",  "recorded_at"),
+            ("voice_sessions",  "joined_at"),
+            ("voice_sessions",  "left_at"),
+            ("member_events",   "recorded_at"),
+            ("member_snapshots","recorded_at"),
+            ("audit_runs",      "run_at"),
+            ("bulk_task_log",   "performed_at"),
+            ("scheduler_state", "last_run"),
+        ]
+        total_fixed = 0
+        for table, col in _TIMESTAMP_COLS:
+            cur = conn.execute(
+                f"UPDATE {table} SET {col} = substr({col}, 1, 19) "
+                f"WHERE {col} LIKE '%+%' OR {col} LIKE '%Z'"
+            )
+            if cur.rowcount:
+                total_fixed += cur.rowcount
+                logger.info("Migrated %d rows in %s.%s (stripped tz suffix)", cur.rowcount, table, col)
+        if total_fixed:
+            logger.info("Timestamp migration complete: %d rows updated", total_fixed)
+
         logger.info("Database initialised successfully")
     except Exception:
         logger.critical("Failed to initialise database at %s", DB_PATH, exc_info=True)
@@ -253,7 +277,8 @@ def get_recent_findings(guild_id: int, audit_type: str, limit: int = 20):
 
 
 def _now() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+    # No +00:00 suffix — SQLite strftime() can't parse it on all versions.
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _today() -> str:
@@ -262,7 +287,7 @@ def _today() -> str:
 
 def _days_ago(days: int) -> str:
     dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
-    return dt.isoformat()
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")
 
 
 # ---------------------------------------------------------------------------

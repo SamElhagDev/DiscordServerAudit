@@ -15,7 +15,8 @@
       "Bash(python -m py_compile utils/help.py)",
       "Bash(python -m py_compile config.py)",
       "Bash(python -c \"import py_compile; import glob; files = glob.glob\\('**/*.py', recursive=True\\); errors = []; [errors.append\\(f\\) if not \\(py_compile.compile\\(f, doraise=True\\) or True\\) else None for f in files if f != '__pycache__']; print\\(f'Compiled {len\\(files\\)} files OK'\\)\")",
-      "Bash(Get-Content config.yaml)"
+      "Bash(Get-Content config.yaml)",
+      "Bash(python -m py_compile database.py cogs/stats.py)"
     ]
   }
 }
