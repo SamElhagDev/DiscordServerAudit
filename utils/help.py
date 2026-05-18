@@ -4,27 +4,33 @@ from discord.ext import commands
 
 # Per-cog accent colours so each section is visually distinct
 _COG_COLORS = {
-    "Admin":         discord.Color.blurple(),
-    "BulkTasks":     discord.Color.gold(),
-    "SecurityAudit": discord.Color.red(),
-    "ServerAudit":   discord.Color.green(),
+    "Admin":           discord.Color.blurple(),
+    "BulkTasks":       discord.Color.gold(),
+    "SecurityAudit":   discord.Color.red(),
+    "ServerAudit":     discord.Color.green(),
+    "Stats":           discord.Color.blue(),
+    "NaturalLanguage": discord.Color.purple(),
 }
 _DEFAULT_COLOR = discord.Color.blue()
 
 # Friendly display names for cogs
 _COG_LABELS = {
-    "Admin":         "⚙️  Admin Utilities",
-    "BulkTasks":     "🔨  Bulk Operations",
-    "SecurityAudit": "🔒  Security Audit",
-    "ServerAudit":   "📊  Server Audit",
+    "Admin":           "⚙️  Admin Utilities",
+    "BulkTasks":       "🔨  Bulk Operations",
+    "SecurityAudit":   "🔒  Security Audit",
+    "ServerAudit":     "📊  Server Audit",
+    "Stats":           "📈  Stats & Analytics",
+    "NaturalLanguage": "💬  Natural Language",
 }
 
 # Short descriptions shown in the overview embed
 _COG_DESCRIPTIONS = {
-    "Admin":         "Runtime config inspection and bot utilities.",
-    "BulkTasks":     "Mass-manage messages, members, roles and channels.",
-    "SecurityAudit": "Scan for dangerous permissions, 2FA gaps, and bot overreach.",
-    "ServerAudit":   "Detect dead channels, missing onboarding, and branding gaps.",
+    "Admin":           "Runtime config inspection and bot utilities.",
+    "BulkTasks":       "Mass-manage messages, members, roles and channels.",
+    "SecurityAudit":   "Scan for dangerous permissions, 2FA gaps, and bot overreach.",
+    "ServerAudit":     "Detect dead channels, missing onboarding, and branding gaps.",
+    "Stats":           "Server activity dashboards, user stats, voice tracking, and history scanning.",
+    "NaturalLanguage": "Describe admin tasks in plain English and execute them with AI.",
 }
 
 

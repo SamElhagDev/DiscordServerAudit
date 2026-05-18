@@ -7,13 +7,31 @@ from contextlib import contextmanager
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.environ.get("DiscordServerAudit_DB_PATH", "bot.db")
+_conn: sqlite3.Connection | None = None
+
+
+def _ensure_conn() -> sqlite3.Connection:
+    global _conn
+    if _conn is None:
+        _conn = sqlite3.connect(DB_PATH, timeout=10)
+        _conn.row_factory = sqlite3.Row
+        _conn.execute("PRAGMA journal_mode=WAL")
+        logger.debug("Opened persistent database connection to %s", DB_PATH)
+    return _conn
+
+
+def close_db():
+    global _conn
+    if _conn is not None:
+        _conn.close()
+        _conn = None
+        logger.info("Database connection closed")
 
 
 def init_db():
     logger.info("Initialising database at: %s", DB_PATH)
     try:
         with get_conn() as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS audit_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,8 +172,7 @@ def init_db():
 
 @contextmanager
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = _ensure_conn()
     try:
         yield conn
         conn.commit()
@@ -163,8 +180,6 @@ def get_conn():
         conn.rollback()
         logger.error("Database transaction rolled back", exc_info=True)
         raise
-    finally:
-        conn.close()
 
 
 def log_bulk_task(task_type: str, performed_by: str, guild_id: int, details: str):
@@ -289,20 +304,27 @@ def end_voice_session(guild_id: int, user_id: int):
             logger.debug("Voice session ended: guild=%s user=%s duration=%ds", guild_id, user_id, duration)
 
 
+_MAX_ORPHAN_DURATION = 8 * 3600  # 8 hours — cap inflated durations from bot downtime
+
+
 def close_orphaned_voice_sessions():
     now = _now()
     with get_conn() as conn:
         rows = conn.execute("SELECT id, joined_at FROM voice_sessions WHERE left_at IS NULL").fetchall()
+        capped = 0
         for row in rows:
             joined = datetime.datetime.fromisoformat(row["joined_at"])
             left = datetime.datetime.fromisoformat(now)
             duration = int((left - joined).total_seconds())
+            if duration > _MAX_ORPHAN_DURATION:
+                capped += 1
+                duration = _MAX_ORPHAN_DURATION
             conn.execute(
                 "UPDATE voice_sessions SET left_at = ?, duration_seconds = ? WHERE id = ?",
                 (now, duration, row["id"]),
             )
         if rows:
-            logger.info("Closed %d orphaned voice sessions", len(rows))
+            logger.info("Closed %d orphaned voice sessions (%d capped at %ds)", len(rows), capped, _MAX_ORPHAN_DURATION)
 
 
 def log_member_event(guild_id: int, user_id: int, event_type: str):
@@ -315,6 +337,7 @@ def log_member_event(guild_id: int, user_id: int, event_type: str):
 
 
 def bulk_log_message_events(events: list[tuple]):
+    logger.debug("Bulk inserting %d message events", len(events))
     with get_conn() as conn:
         conn.executemany(
             "INSERT INTO message_events (guild_id, channel_id, user_id, recorded_at, word_count) VALUES (?, ?, ?, ?, ?)",
@@ -323,6 +346,7 @@ def bulk_log_message_events(events: list[tuple]):
 
 
 def bulk_log_member_events(events: list[tuple]):
+    logger.debug("Bulk inserting %d member events", len(events))
     with get_conn() as conn:
         conn.executemany(
             "INSERT INTO member_events (guild_id, user_id, event_type, recorded_at) VALUES (?, ?, ?, ?)",

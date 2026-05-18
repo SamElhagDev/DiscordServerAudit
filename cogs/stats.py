@@ -150,22 +150,54 @@ class Stats(commands.Cog):
     async def _take_snapshot(self, guild: discord.Guild):
         if not config.get("stats.enabled", True):
             return
-        total = guild.member_count or 0
-        bots = sum(1 for m in guild.members if m.bot)
-        online = sum(1 for m in guild.members if m.status != discord.Status.offline)
-        database.save_member_snapshot(
-            guild.id, total, online, bots,
-            guild.premium_subscription_count or 0,
-            guild.premium_tier,
-        )
+        try:
+            total = guild.member_count or 0
+            bots = sum(1 for m in guild.members if m.bot)
+            online = sum(1 for m in guild.members if m.status != discord.Status.offline)
+            database.save_member_snapshot(
+                guild.id, total, online, bots,
+                guild.premium_subscription_count or 0,
+                guild.premium_tier,
+            )
+            logger.debug("Snapshot taken: guild=%s total=%d online=%d bots=%d", guild.id, total, online, bots)
+        except Exception:
+            logger.error("Failed to take member snapshot for guild %s", guild.id, exc_info=True)
 
     async def _run_rollup(self, guild: discord.Guild):
-        yesterday = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        database.rollup_user_activity(guild.id, yesterday)
-        database.rollup_channel_activity(guild.id, yesterday)
-        retention = config.get("stats.retention_days", 30)
-        database.prune_old_events(retention)
-        logger.info("Daily rollup complete for guild %r: date=%s, retention=%dd", guild.name, yesterday, retention)
+        try:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            yesterday = (now - datetime.timedelta(days=1)).date()
+
+            last_run = database.get_last_run(f"stats_rollup_{guild.id}")
+            if last_run:
+                first_missed = (last_run.date() + datetime.timedelta(days=1))
+            else:
+                first_missed = yesterday
+
+            if first_missed < yesterday:
+                first_missed = max(first_missed, (now - datetime.timedelta(days=90)).date())
+
+            dates_to_roll = []
+            d = first_missed
+            while d <= yesterday:
+                dates_to_roll.append(d.strftime("%Y-%m-%d"))
+                d += datetime.timedelta(days=1)
+
+            for date_str in dates_to_roll:
+                database.rollup_user_activity(guild.id, date_str)
+                database.rollup_channel_activity(guild.id, date_str)
+
+            retention = config.get("stats.retention_days", 30)
+            database.prune_old_events(retention)
+            logger.info(
+                "Daily rollup complete for guild %r: dates=%d (%s..%s), retention=%dd",
+                guild.name, len(dates_to_roll),
+                dates_to_roll[0] if dates_to_roll else "none",
+                dates_to_roll[-1] if dates_to_roll else "none",
+                retention,
+            )
+        except Exception:
+            logger.error("Daily rollup failed for guild %s", guild.id, exc_info=True)
 
     # ------------------------------------------------------------------
     # Event listeners (T032-T036)
@@ -187,8 +219,11 @@ class Stats(commands.Cog):
         excluded_users = config.get("stats.excluded_users", [])
         if message.author.id in excluded_users:
             return
-        word_count = len(message.content.split()) if message.content else 0
-        database.log_message_event(message.guild.id, message.channel.id, message.author.id, word_count)
+        try:
+            word_count = len(message.content.split()) if message.content else 0
+            database.log_message_event(message.guild.id, message.channel.id, message.author.id, word_count)
+        except Exception:
+            logger.error("Failed to log message event: guild=%s channel=%s user=%s", message.guild.id, message.channel.id, message.author.id, exc_info=True)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -196,33 +231,53 @@ class Stats(commands.Cog):
             return
         if member.bot and config.get("stats.exclude_bots", True):
             return
-        if before.channel is None and after.channel is not None:
-            database.start_voice_session(member.guild.id, after.channel.id, member.id)
-        elif before.channel is not None and after.channel is None:
-            database.end_voice_session(member.guild.id, member.id)
-        elif before.channel is not None and after.channel is not None and before.channel.id != after.channel.id:
-            database.end_voice_session(member.guild.id, member.id)
-            database.start_voice_session(member.guild.id, after.channel.id, member.id)
+        try:
+            if before.channel is None and after.channel is not None:
+                logger.debug("Voice join: user=%s guild=%s channel=%s", member.id, member.guild.id, after.channel.id)
+                database.start_voice_session(member.guild.id, after.channel.id, member.id)
+            elif before.channel is not None and after.channel is None:
+                logger.debug("Voice leave: user=%s guild=%s channel=%s", member.id, member.guild.id, before.channel.id)
+                database.end_voice_session(member.guild.id, member.id)
+            elif before.channel is not None and after.channel is not None and before.channel.id != after.channel.id:
+                logger.debug("Voice move: user=%s guild=%s %s→%s", member.id, member.guild.id, before.channel.id, after.channel.id)
+                database.end_voice_session(member.guild.id, member.id)
+                database.start_voice_session(member.guild.id, after.channel.id, member.id)
+        except Exception:
+            logger.error("Failed to log voice state update: user=%s guild=%s", member.id, member.guild.id, exc_info=True)
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         if not self._scanning and config.get("stats.enabled", True):
-            database.log_member_event(member.guild.id, member.id, "join")
+            try:
+                database.log_member_event(member.guild.id, member.id, "join")
+            except Exception:
+                logger.error("Failed to log member join: user=%s guild=%s", member.id, member.guild.id, exc_info=True)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         if not self._scanning and config.get("stats.enabled", True):
-            database.log_member_event(member.guild.id, member.id, "leave")
+            try:
+                database.log_member_event(member.guild.id, member.id, "leave")
+            except Exception:
+                logger.error("Failed to log member remove: user=%s guild=%s", member.id, member.guild.id, exc_info=True)
 
     @commands.Cog.listener()
     async def on_member_ban(self, guild: discord.Guild, user: discord.User):
         if config.get("stats.enabled", True):
-            database.log_member_event(guild.id, user.id, "ban")
+            try:
+                database.log_member_event(guild.id, user.id, "ban")
+                logger.info("Member banned: user=%s guild=%s", user.id, guild.id)
+            except Exception:
+                logger.error("Failed to log member ban: user=%s guild=%s", user.id, guild.id, exc_info=True)
 
     @commands.Cog.listener()
     async def on_member_unban(self, guild: discord.Guild, user: discord.User):
         if config.get("stats.enabled", True):
-            database.log_member_event(guild.id, user.id, "unban")
+            try:
+                database.log_member_event(guild.id, user.id, "unban")
+                logger.info("Member unbanned: user=%s guild=%s", user.id, guild.id)
+            except Exception:
+                logger.error("Failed to log member unban: user=%s guild=%s", user.id, guild.id, exc_info=True)
 
     async def _resolve_message_author(self, payload: discord.RawReactionActionEvent) -> int | None:
         author_id = getattr(payload, "message_author_id", None)
@@ -236,8 +291,12 @@ class Stats(commands.Cog):
             if channel:
                 msg = await channel.fetch_message(payload.message_id)
                 return msg.author.id
+        except discord.NotFound:
+            logger.debug("Message %s not found during author resolution", payload.message_id)
+        except discord.Forbidden:
+            logger.debug("No permission to fetch message %s in channel %s", payload.message_id, payload.channel_id)
         except Exception:
-            pass
+            logger.warning("Failed to resolve message author: msg=%s channel=%s", payload.message_id, payload.channel_id, exc_info=True)
         return None
 
     @commands.Cog.listener()
@@ -248,8 +307,11 @@ class Stats(commands.Cog):
             return
         if payload.member and payload.member.bot and config.get("stats.exclude_bots", True):
             return
-        author_id = await self._resolve_message_author(payload)
-        database.increment_reaction(payload.guild_id, payload.user_id, author_id)
+        try:
+            author_id = await self._resolve_message_author(payload)
+            database.increment_reaction(payload.guild_id, payload.user_id, author_id)
+        except Exception:
+            logger.error("Failed to log reaction add: guild=%s user=%s msg=%s", payload.guild_id, payload.user_id, payload.message_id, exc_info=True)
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
@@ -257,8 +319,11 @@ class Stats(commands.Cog):
             return
         if payload.guild_id is None:
             return
-        author_id = await self._resolve_message_author(payload)
-        database.decrement_reaction(payload.guild_id, payload.user_id, author_id)
+        try:
+            author_id = await self._resolve_message_author(payload)
+            database.decrement_reaction(payload.guild_id, payload.user_id, author_id)
+        except Exception:
+            logger.error("Failed to log reaction remove: guild=%s user=%s msg=%s", payload.guild_id, payload.user_id, payload.message_id, exc_info=True)
 
     # ------------------------------------------------------------------
     # Commands (T039-T043, T045)
@@ -801,7 +866,7 @@ class Stats(commands.Cog):
     @commands.hybrid_command(name="scan", description="Backfill stats database with server message history")
     @commands.guild_only()
     async def scan_cmd(self, ctx: commands.Context, days: int = 30):
-        days = max(1, days)
+        days = max(1, min(days, 365))
 
         if self._scanning:
             embed = discord.Embed(
@@ -823,6 +888,7 @@ class Stats(commands.Cog):
         guild = ctx.guild
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
         cutoff_iso = cutoff.isoformat()
+        logger.info("Scan starting: guild=%r (ID=%s) days=%d cutoff=%s", guild.name, guild.id, days, cutoff_iso)
 
         embed = discord.Embed(
             title="\U0001f50d Scanning Server History",
@@ -885,10 +951,11 @@ class Stats(commands.Cog):
 
                 total_channels += 1
             except discord.Forbidden:
+                logger.debug("Scan: no access to #%s (ID=%s)", channel.name, channel.id)
                 skipped_channels += 1
                 continue
-            except Exception as e:
-                logger.warning("Error scanning channel #%s: %s", channel.name, e)
+            except Exception:
+                logger.error("Scan: error scanning channel #%s (ID=%s)", channel.name, channel.id, exc_info=True)
                 skipped_channels += 1
                 continue
 

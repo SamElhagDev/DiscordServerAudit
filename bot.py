@@ -94,6 +94,7 @@ class AdminBot(commands.Bot):
 
     async def setup_hook(self):
         database.init_db()
+        self.tree.on_error = self._on_app_command_error
         for cog in COGS:
             try:
                 await self.load_extension(cog)
@@ -102,6 +103,19 @@ class AdminBot(commands.Bot):
                 logger.error("Failed to load cog %s: %s", cog, e, exc_info=True)
         synced = await self.tree.sync()
         logger.info("Synced %d app commands", len(synced))
+
+    async def _on_app_command_error(self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+        logger.error(
+            "Slash command error | cmd=%s | user=%s (ID=%s) | guild=%s | error=%s",
+            interaction.command.name if interaction.command else "unknown",
+            interaction.user, interaction.user.id,
+            interaction.guild_id or "DM",
+            error, exc_info=error,
+        )
+        if interaction.response.is_done():
+            await interaction.followup.send(f"An error occurred: {error}", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"An error occurred: {error}", ephemeral=True)
 
     async def on_ready(self):
         elapsed = time.monotonic() - self._start_time
@@ -150,6 +164,15 @@ class AdminBot(commands.Bot):
             )
 
         asyncio.create_task(self.scheduler.start())
+
+    async def on_error(self, event_method: str, *args, **kwargs):
+        logger.error("Unhandled exception in event %r", event_method, exc_info=True)
+
+    async def on_disconnect(self):
+        logger.warning("Bot disconnected from Discord gateway")
+
+    async def on_resumed(self):
+        logger.info("Bot resumed Discord gateway session")
 
     async def on_guild_join(self, guild: discord.Guild):
         logger.info(
@@ -202,7 +225,14 @@ class AdminBot(commands.Bot):
             await cog.post_audit_results(guild, findings)
 
     async def on_command_error(self, ctx: commands.Context, error):
-        if isinstance(error, (commands.CheckFailure, commands.CommandNotFound)):
+        if isinstance(error, commands.CommandNotFound):
+            return
+        if isinstance(error, commands.CheckFailure):
+            logger.debug(
+                "Check failed | cmd=%r | user=%s (ID=%s) | %s",
+                ctx.command.qualified_name if ctx.command else "unknown",
+                ctx.author, ctx.author.id, error,
+            )
             return
         if isinstance(error, commands.MissingRequiredArgument):
             logger.warning(
@@ -224,6 +254,16 @@ class AdminBot(commands.Bot):
                 error, exc_info=error,
             )
             await ctx.send(f"❌ An unexpected error occurred: {error}")
+
+    async def close(self):
+        logger.info("Bot shutting down — closing orphaned voice sessions")
+        try:
+            database.close_orphaned_voice_sessions()
+        except Exception:
+            logger.error("Failed to close orphaned sessions during shutdown", exc_info=True)
+        database.close_db()
+        await super().close()
+        logger.info("Bot shutdown complete")
 
 
 async def main():

@@ -9,7 +9,12 @@
       "Bash(python -m py_compile bot.py database.py utils/scheduler.py utils/permissions.py utils/gemini.py utils/planner.py cogs/admin.py cogs/security_audit.py cogs/server_audit.py cogs/natural_language.py)",
       "PowerShell(.\\\\.specify\\\\scripts\\\\powershell\\\\setup-plan.ps1 -Json)",
       "Bash(python -m py_compile database.py)",
-      "Bash(python -m py_compile cogs/stats.py)"
+      "Bash(python -m py_compile cogs/stats.py)",
+      "Bash(powershell -ExecutionPolicy Bypass -File .specify/scripts/powershell/setup-plan.ps1 -Json)",
+      "Bash(python -m py_compile bot.py)",
+      "Bash(python -m py_compile utils/help.py)",
+      "Bash(python -m py_compile config.py)",
+      "Bash(python -c \"import py_compile; import glob; files = glob.glob\\('**/*.py', recursive=True\\); errors = []; [errors.append\\(f\\) if not \\(py_compile.compile\\(f, doraise=True\\) or True\\) else None for f in files if f != '__pycache__']; print\\(f'Compiled {len\\(files\\)} files OK'\\)\")"
     ]
   }
 }
