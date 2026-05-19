@@ -72,6 +72,7 @@ COGS = [
     "cogs.server_audit",
     "cogs.natural_language",
     "cogs.stats",
+    "cogs.fact_check",
 ]
 
 

@@ -10,6 +10,7 @@ _COG_COLORS = {
     "ServerAudit":     discord.Color.green(),
     "Stats":           discord.Color.blue(),
     "NaturalLanguage": discord.Color.purple(),
+    "FactCheck":       discord.Color.teal(),
 }
 _DEFAULT_COLOR = discord.Color.blue()
 
@@ -21,6 +22,7 @@ _COG_LABELS = {
     "ServerAudit":     "📊  Server Audit",
     "Stats":           "📈  Stats & Analytics",
     "NaturalLanguage": "💬  Natural Language",
+    "FactCheck":       "🔍  Fact-Check",
 }
 
 # Short descriptions shown in the overview embed
@@ -31,6 +33,7 @@ _COG_DESCRIPTIONS = {
     "ServerAudit":     "Detect dead channels, missing onboarding, and branding gaps.",
     "Stats":           "Server activity dashboards, user stats, voice tracking, and history scanning.",
     "NaturalLanguage": "Describe admin tasks in plain English and execute them with AI.",
+    "FactCheck":       "React with an emoji to fact-check any message using AI.",
 }
 
 

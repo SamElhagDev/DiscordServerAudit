@@ -41,3 +41,12 @@ stats:
   excluded_channels: []            # Channel IDs to exclude from tracking
   excluded_users: []               # User IDs to exclude (e.g., bots)
   exclude_bots: true               # Auto-exclude bot users from message/voice tracking
+
+# Fact-check settings (emoji-triggered via reaction)
+factcheck:
+  enabled: true                    # Master toggle for fact-check feature
+  emoji: "\U0001F50D"             # Emoji name or unicode char that triggers fact-check (magnifying glass)
+  model: "gemini-2.5-flash"       # Gemini model for fact-checking (accuracy over speed)
+  rate_limit: 5                    # Max fact-checks per user per hour
+  cooldown_seconds: 300            # Seconds before same message can be re-checked
+  timeout_seconds: 30              # Max seconds to wait for Gemini response

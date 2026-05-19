@@ -17,7 +17,11 @@
       "Bash(python -c \"import py_compile; import glob; files = glob.glob\\('**/*.py', recursive=True\\); errors = []; [errors.append\\(f\\) if not \\(py_compile.compile\\(f, doraise=True\\) or True\\) else None for f in files if f != '__pycache__']; print\\(f'Compiled {len\\(files\\)} files OK'\\)\")",
       "Bash(Get-Content config.yaml)",
       "Bash(python -m py_compile database.py cogs/stats.py)",
-      "Bash(pip install *)"
+      "Bash(pip install *)",
+      "WebSearch",
+      "Bash(git -C \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordServerAudit\" rev-parse --git-dir)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('cogs/fact_check.py', doraise=True\\); print\\('OK: cogs/fact_check.py compiles'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('bot.py', doraise=True\\); py_compile.compile\\('config.py', doraise=True\\); py_compile.compile\\('utils/help.py', doraise=True\\); print\\('OK: all modified files compile'\\)\")"
     ]
   }
 }
