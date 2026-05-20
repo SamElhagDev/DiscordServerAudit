@@ -55,11 +55,21 @@ class FactCheck(commands.Cog):
         return emoji.name == configured
 
     @staticmethod
-    def _build_prompt(text: str) -> str:
-        """Build the Gemini fact-check prompt for *text*."""
+    def _build_prompt(text: str, reply_context: str | None = None) -> str:
+        """Build the Gemini fact-check prompt for *text*, optionally including the message it replies to."""
+        context_block = ""
+        if reply_context:
+            context_block = (
+                "This message is a reply to the following original message. Use it as\n"
+                "context to understand what claims are being made or responded to.\n\n"
+                f'Original message being replied to:\n"{reply_context}"\n\n'
+                "---\n\n"
+            )
+
         return (
             "You are an expert fact-checker providing detailed, educational analysis.\n"
             "Analyze the following message from a Discord server.\n\n"
+            f"{context_block}"
             "1. Identify each discrete factual claim in the message.\n"
             "2. For each claim:\n"
             "   - State the claim clearly\n"
@@ -286,10 +296,28 @@ class FactCheck(commands.Cog):
         if not text or not text.strip():
             return  # Skip image-only / embed-only messages
 
+        # Resolve reply context if the tagged message is itself a reply
+        reply_context = None
+        if message.reference and message.reference.message_id:
+            try:
+                parent = message.reference.resolved
+                if not isinstance(parent, discord.Message):
+                    parent = await channel.fetch_message(message.reference.message_id)
+                if parent and parent.content and parent.content.strip():
+                    reply_context = parent.content
+                    logger.info(
+                        "Fact-check includes reply context | parent_msg=%s len=%d",
+                        parent.id, len(reply_context),
+                    )
+            except (discord.NotFound, discord.Forbidden):
+                logger.debug("Could not fetch parent message %s — skipping reply context", message.reference.message_id)
+            except Exception:
+                logger.debug("Error fetching parent message for reply context", exc_info=True)
+
         logger.info(
-            "Fact-check triggered | guild=%s channel=#%s user=%s msg=%s len=%d",
+            "Fact-check triggered | guild=%s channel=#%s user=%s msg=%s len=%d has_reply_context=%s",
             payload.guild_id, getattr(channel, "name", "?"),
-            payload.user_id, payload.message_id, len(text),
+            payload.user_id, payload.message_id, len(text), reply_context is not None,
         )
 
         # Send "Checking..." placeholder, then edit with result
@@ -306,7 +334,7 @@ class FactCheck(commands.Cog):
 
         # Call Gemini
         t0 = time.perf_counter()
-        prompt = self._build_prompt(text)
+        prompt = self._build_prompt(text, reply_context=reply_context)
         result = await self._call_gemini(prompt)
         elapsed = time.perf_counter() - t0
 
