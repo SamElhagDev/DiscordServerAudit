@@ -21,7 +21,12 @@
       "WebSearch",
       "Bash(git -C \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordServerAudit\" rev-parse --git-dir)",
       "Bash(python -c \"import py_compile; py_compile.compile\\('cogs/fact_check.py', doraise=True\\); print\\('OK: cogs/fact_check.py compiles'\\)\")",
-      "Bash(python -c \"import py_compile; py_compile.compile\\('bot.py', doraise=True\\); py_compile.compile\\('config.py', doraise=True\\); py_compile.compile\\('utils/help.py', doraise=True\\); print\\('OK: all modified files compile'\\)\")"
+      "Bash(python -c \"import py_compile; py_compile.compile\\('bot.py', doraise=True\\); py_compile.compile\\('config.py', doraise=True\\); py_compile.compile\\('utils/help.py', doraise=True\\); print\\('OK: all modified files compile'\\)\")",
+      "PowerShell(Get-ChildItem \"$env:USERPROFILE\\\\.claude\\\\projects\\\\C--Users-Sam-Elhag-EREF-source-repos-DiscordServerAudit\\\\memory\\\\\")",
+      "PowerShell(if \\(-not \\(Test-Path \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordServerAudit\\\\specs\\\\003-expanded-stats\"\\)\\) { New-Item -ItemType Directory -Path \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordServerAudit\\\\specs\\\\003-expanded-stats\" -Force; New-Item -ItemType Directory -Path \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordServerAudit\\\\specs\\\\003-expanded-stats\\\\contracts\" -Force })",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('cogs/stats.py', doraise=True\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('database.py', doraise=True\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('utils/gemini.py', doraise=True\\); print\\('OK'\\)\")"
     ]
   }
 }

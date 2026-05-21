@@ -42,6 +42,10 @@ stats:
   excluded_users: []               # User IDs to exclude (e.g., bots)
   exclude_bots: true               # Auto-exclude bot users from message/voice tracking
 
+# Gemini settings (shared across features)
+gemini:
+  model: "gemini-2.5-flash"         # Default Gemini model for summaries and insights
+
 # Fact-check settings (emoji-triggered via reaction)
 factcheck:
   enabled: true                    # Master toggle for fact-check feature

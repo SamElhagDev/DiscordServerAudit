@@ -7,7 +7,7 @@ A Discord bot for bulk automation, security audits, server health recommendation
 - **Bulk Tasks** — Message purging, member pruning, bulk role assign/remove, bulk channel create/delete
 - **Security Audits** — Checks permissions, @everyone overrides, dangerous bot permissions, channel overwrites, 2FA enforcement
 - **Server Audits** — Dead channel detection, missing onboarding channels, role hierarchy issues, branding gaps, channel organization
-- **Stats & Analytics** — Server activity dashboards, per-user and per-channel stats, voice tracking, member growth trends, peak hour analysis, history backfill scanning
+- **Stats & Analytics** — Server activity dashboards, per-user and per-channel stats, voice tracking, member growth trends, peak hour analysis, server health pulse, multi-category leaderboards, user-vs-user comparisons, history backfill scanning
 - **Natural Language** — Describe admin tasks in plain English (via `!ask`), review an AI-generated execution plan, then confirm to run it. Supports 30+ actions including moderation, channel/role management, and server queries
 - **Fact-Check** — React to any message with a configurable emoji to get an AI-powered fact-check with per-claim breakdowns, verdicts, and detailed analysis
 - **AI-Powered** — Gemini integration provides AI action plans for audit findings, server trend insights, and natural language command planning
@@ -127,12 +127,15 @@ python bot.py
 
 | Command | Description |
 |---|---|
-| `/stats [days]` | Server activity dashboard (messages, voice, top users/channels, trend chart) |
-| `/userstats @User [days]` | Activity profile for a specific user |
-| `/channelstats #channel [days]` | Activity report for a specific channel |
-| `/voicestats [days]` | Voice activity dashboard (leaderboard, channel usage, trends) |
-| `/growth [days]` | Member growth trends (joins vs leaves, retention, growth chart) |
-| `/peakhours [days]` | Message activity distribution by hour |
+| `/stats [days]` | Server activity dashboard with health metrics, DAU/MAU, channel diversity |
+| `/userstats @User [days]` | Activity profile with streaks, consistency score, hourly heatmap |
+| `/channelstats #channel [days]` | Channel report with user concentration, word stats, growth trends |
+| `/voicestats [days]` | Voice dashboard with session distribution, day-of-week analysis |
+| `/growth [days]` | Member growth with churn rate, ban rate, member lifecycle |
+| `/peakhours [days]` | Hourly distribution with per-channel breakdown, weekday vs weekend |
+| `/serverpulse` | Quick server health check with composite score (admin only) |
+| `/leaderboard [days] [category]` | Top 10 users by messages, voice, streaks, engagement, or social |
+| `/activity @User1 @User2 [days]` | Head-to-head user comparison with overlay chart |
 | `/insights [days]` | AI-powered server trend analysis (requires Gemini) |
 | `/scan [days]` | Backfill the stats database with server message history |
 | `/dbcheck` | Diagnose stats tables for duplicates and consistency |

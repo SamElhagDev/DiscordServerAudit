@@ -31,7 +31,7 @@ _COG_DESCRIPTIONS = {
     "BulkTasks":       "Mass-manage messages, members, roles and channels.",
     "SecurityAudit":   "Scan for dangerous permissions, 2FA gaps, and bot overreach.",
     "ServerAudit":     "Detect dead channels, missing onboarding, and branding gaps.",
-    "Stats":           "Server activity dashboards, user stats, voice tracking, and history scanning.",
+    "Stats":           "Server activity dashboards, user stats, voice tracking, leaderboards, user comparisons, server health pulse, and history scanning.",
     "NaturalLanguage": "Describe admin tasks in plain English and execute them with AI.",
     "FactCheck":       "React with an emoji to fact-check any message using AI.",
 }
