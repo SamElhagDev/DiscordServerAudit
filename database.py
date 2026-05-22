@@ -303,9 +303,14 @@ def _today() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 
 
-def _days_ago(days: int) -> str:
+def _cutoff_datetime(days: int) -> str:
+    """Return an ISO datetime string for use with raw event tables (recorded_at >= ?)."""
     dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
     return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+# Keep old name as alias so external callers (cogs) don't break.
+_days_ago = _cutoff_datetime
 
 
 # ---------------------------------------------------------------------------
@@ -484,7 +489,7 @@ def rollup_channel_activity(guild_id: int, date: str):
 
 
 def prune_old_events(days: int):
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         r1 = conn.execute("DELETE FROM message_events WHERE recorded_at < ?", (cutoff,))
         r2 = conn.execute("DELETE FROM voice_sessions WHERE joined_at < ? AND left_at IS NOT NULL", (cutoff,))
@@ -497,7 +502,7 @@ def prune_old_events(days: int):
 # ---------------------------------------------------------------------------
 
 def get_server_stats_summary(guild_id: int, days: int) -> dict:
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     cutoff_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
     with get_conn() as conn:
         # Use the rolled-up table so total_messages uses the same source/cutoff as
@@ -553,7 +558,7 @@ def get_top_channels(guild_id: int, days: int, limit: int = 5):
 
 
 def get_peak_hours(guild_id: int, days: int):
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         return conn.execute(
             "SELECT CAST(substr(recorded_at, 12, 2) AS INTEGER) as hour, COUNT(*) as count "
@@ -593,7 +598,7 @@ def get_user_stats(guild_id: int, user_id: int, days: int) -> dict:
             "  AND DATE(joined_at) NOT IN ("
             "    SELECT date FROM user_activity_daily WHERE guild_id = ? AND user_id = ?"
             "  )",
-            (guild_id, user_id, _days_ago(days), guild_id, user_id),
+            (guild_id, user_id, _cutoff_datetime(days), guild_id, user_id),
         ).fetchone()
 
         # Currently-active sessions (left_at IS NULL means user is still in voice).
@@ -610,7 +615,7 @@ def get_user_stats(guild_id: int, user_id: int, days: int) -> dict:
             "SELECT channel_id, COUNT(*) as c FROM message_events "
             "WHERE guild_id = ? AND user_id = ? AND recorded_at >= ? "
             "GROUP BY channel_id ORDER BY c DESC LIMIT 1",
-            (guild_id, user_id, _days_ago(days)),
+            (guild_id, user_id, _cutoff_datetime(days)),
         ).fetchone()
         daily = conn.execute(
             "SELECT date, message_count, voice_minutes FROM user_activity_daily "
@@ -621,7 +626,7 @@ def get_user_stats(guild_id: int, user_id: int, days: int) -> dict:
             "SELECT channel_id, COUNT(*) as c FROM message_events "
             "WHERE guild_id = ? AND user_id = ? AND recorded_at >= ? "
             "GROUP BY channel_id ORDER BY c DESC LIMIT 6",
-            (guild_id, user_id, _days_ago(days)),
+            (guild_id, user_id, _cutoff_datetime(days)),
         ).fetchall()
     return {
         "message_count": totals["msgs"],
@@ -636,7 +641,7 @@ def get_user_stats(guild_id: int, user_id: int, days: int) -> dict:
 
 def get_channel_stats(guild_id: int, channel_id: int, days: int) -> dict:
     cutoff_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         totals = conn.execute(
             "SELECT COALESCE(SUM(message_count), 0) as msgs, COALESCE(SUM(unique_users), 0) as users "
@@ -686,7 +691,7 @@ def get_voice_leaderboard(guild_id: int, days: int, limit: int = 5):
 
 
 def get_voice_channel_stats(guild_id: int, days: int, limit: int = 5):
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         return conn.execute(
             "SELECT channel_id, SUM(duration_seconds) as total FROM voice_sessions "
@@ -697,7 +702,7 @@ def get_voice_channel_stats(guild_id: int, days: int, limit: int = 5):
 
 
 def get_member_growth(guild_id: int, days: int):
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         return conn.execute(
             "SELECT recorded_at, total_members FROM member_snapshots "
@@ -707,7 +712,7 @@ def get_member_growth(guild_id: int, days: int):
 
 
 def get_member_events_summary(guild_id: int, days: int) -> dict:
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         joins = conn.execute(
             "SELECT COUNT(*) as c FROM member_events WHERE guild_id = ? AND event_type = 'join' AND recorded_at >= ?",
@@ -738,6 +743,19 @@ def get_member_events_summary(guild_id: int, days: int) -> dict:
 
 def _cutoff_date(days: int) -> str:
     return (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def _gini(values: list[int]) -> float:
+    """Gini coefficient for a list of non-negative ints. 0 = equal, 1 = maximally unequal."""
+    if not values or len(values) <= 1:
+        return 0.0
+    sorted_v = sorted(values)
+    n = len(sorted_v)
+    grand = sum(sorted_v)
+    if grand == 0:
+        return 0.0
+    cum = sum((2 * (i + 1) - n - 1) * v for i, v in enumerate(sorted_v))
+    return round(cum / (n * grand), 2)
 
 
 # ---------------------------------------------------------------------------
@@ -785,7 +803,7 @@ def get_server_word_stats(guild_id: int, days: int) -> dict:
 
 
 def get_weekday_weekend_split(guild_id: int, days: int) -> dict:
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT CAST(strftime('%%w', recorded_at) AS INTEGER) as dow, COUNT(*) as c "
@@ -837,15 +855,10 @@ def get_activity_diversity(guild_id: int, days: int) -> dict:
         return {"gini": 0, "top3_share": 0}
     grand = sum(values)
     top3 = sum(values[:3])
-    # Gini coefficient
-    n = len(values)
-    if n <= 1:
-        gini = 0
-    else:
-        sorted_v = sorted(values)
-        cum = sum((2 * (i + 1) - n - 1) * v for i, v in enumerate(sorted_v))
-        gini = round(cum / (n * grand), 2) if grand else 0
-    return {"gini": gini, "top3_share": round(top3 / grand * 100, 1) if grand else 0}
+    return {
+        "gini": _gini(values),
+        "top3_share": round(top3 / grand * 100, 1) if grand else 0,
+    }
 
 
 def get_message_velocity(guild_id: int, days: int) -> dict:
@@ -886,7 +899,7 @@ def get_user_word_stats(guild_id: int, user_id: int, days: int) -> dict:
 
 
 def get_user_active_hours(guild_id: int, user_id: int, days: int) -> list:
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT CAST(substr(recorded_at, 12, 2) AS INTEGER) as hour, COUNT(*) as count "
@@ -959,7 +972,7 @@ def get_user_consistency(guild_id: int, user_id: int, days: int) -> dict:
 
 
 def get_user_weekday_split(guild_id: int, user_id: int, days: int) -> dict:
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT CAST(strftime('%%w', recorded_at) AS INTEGER) as dow, COUNT(*) as c "
@@ -1036,7 +1049,7 @@ def get_channel_word_stats(guild_id: int, channel_id: int, days: int) -> dict:
 
 
 def get_channel_hourly_heatmap(guild_id: int, channel_id: int, days: int) -> list:
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT CAST(substr(recorded_at, 12, 2) AS INTEGER) as hour, COUNT(*) as count "
@@ -1049,7 +1062,7 @@ def get_channel_hourly_heatmap(guild_id: int, channel_id: int, days: int) -> lis
 
 
 def get_channel_user_concentration(guild_id: int, channel_id: int, days: int) -> dict:
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT user_id, COUNT(*) as c FROM message_events "
@@ -1062,18 +1075,14 @@ def get_channel_user_concentration(guild_id: int, channel_id: int, days: int) ->
         return {"top3_share": 0, "gini": 0}
     grand = sum(values)
     top3 = sum(values[:3])
-    n = len(values)
-    if n <= 1:
-        gini = 0
-    else:
-        sorted_v = sorted(values)
-        cum = sum((2 * (i + 1) - n - 1) * v for i, v in enumerate(sorted_v))
-        gini = round(cum / (n * grand), 2) if grand else 0
-    return {"top3_share": round(top3 / grand * 100, 1) if grand else 0, "gini": gini}
+    return {
+        "top3_share": round(top3 / grand * 100, 1) if grand else 0,
+        "gini": _gini(values),
+    }
 
 
 def get_channel_weekday_split(guild_id: int, channel_id: int, days: int) -> dict:
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT CAST(strftime('%%w', recorded_at) AS INTEGER) as dow, COUNT(*) as c "
@@ -1119,7 +1128,7 @@ def get_channel_growth(guild_id: int, channel_id: int, days: int) -> dict:
 # ---------------------------------------------------------------------------
 
 def get_voice_session_distribution(guild_id: int, days: int) -> dict:
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT duration_seconds FROM voice_sessions "
@@ -1157,7 +1166,7 @@ def get_voice_session_distribution(guild_id: int, days: int) -> dict:
 
 
 def get_voice_day_of_week(guild_id: int, days: int) -> list:
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT CAST(strftime('%%w', joined_at) AS INTEGER) as dow, "
@@ -1172,7 +1181,7 @@ def get_voice_day_of_week(guild_id: int, days: int) -> list:
 
 
 def get_voice_peak_hours(guild_id: int, days: int) -> list:
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT CAST(substr(joined_at, 12, 2) AS INTEGER) as hour, COUNT(*) as sessions "
@@ -1184,12 +1193,23 @@ def get_voice_peak_hours(guild_id: int, days: int) -> list:
     return [{"hour": h, "sessions": by_hour.get(h, 0)} for h in range(24)]
 
 
+def get_user_voice_session_count(guild_id: int, user_id: int, days: int) -> int:
+    """Return the number of completed voice sessions for a user in the given window."""
+    cutoff = _cutoff_datetime(days)
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) as c FROM voice_sessions "
+            "WHERE guild_id = ? AND user_id = ? AND joined_at >= ? AND duration_seconds IS NOT NULL",
+            (guild_id, user_id, cutoff),
+        ).fetchone()["c"]
+
+
 # ---------------------------------------------------------------------------
 # Expanded stats: growth-level queries
 # ---------------------------------------------------------------------------
 
 def get_churn_metrics(guild_id: int, days: int) -> dict:
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         leaves = conn.execute(
             "SELECT COUNT(*) as c FROM member_events WHERE guild_id = ? AND event_type = 'leave' AND recorded_at >= ?",
@@ -1213,7 +1233,7 @@ def get_churn_metrics(guild_id: int, days: int) -> dict:
 
 
 def get_join_day_distribution(guild_id: int, days: int) -> list:
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT CAST(strftime('%%w', recorded_at) AS INTEGER) as dow, COUNT(*) as c "
@@ -1230,7 +1250,7 @@ def get_join_day_distribution(guild_id: int, days: int) -> list:
 # ---------------------------------------------------------------------------
 
 def get_per_channel_peak_hours(guild_id: int, days: int, limit: int = 5) -> list:
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         # Get top channels by message count
         channels = conn.execute(
@@ -1256,7 +1276,7 @@ def get_per_channel_peak_hours(guild_id: int, days: int, limit: int = 5) -> list
 
 
 def get_hourly_weekday_weekend(guild_id: int, days: int) -> dict:
-    cutoff = _days_ago(days)
+    cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT CAST(substr(recorded_at, 12, 2) AS INTEGER) as hour, "

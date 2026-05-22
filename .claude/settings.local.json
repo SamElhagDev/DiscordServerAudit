@@ -26,7 +26,9 @@
       "PowerShell(if \\(-not \\(Test-Path \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordServerAudit\\\\specs\\\\003-expanded-stats\"\\)\\) { New-Item -ItemType Directory -Path \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordServerAudit\\\\specs\\\\003-expanded-stats\" -Force; New-Item -ItemType Directory -Path \"C:\\\\Users\\\\Sam Elhag.EREF\\\\source\\\\repos\\\\DiscordServerAudit\\\\specs\\\\003-expanded-stats\\\\contracts\" -Force })",
       "Bash(python -c \"import py_compile; py_compile.compile\\('cogs/stats.py', doraise=True\\); print\\('OK'\\)\")",
       "Bash(python -c \"import py_compile; py_compile.compile\\('database.py', doraise=True\\); print\\('OK'\\)\")",
-      "Bash(python -c \"import py_compile; py_compile.compile\\('utils/gemini.py', doraise=True\\); print\\('OK'\\)\")"
+      "Bash(python -c \"import py_compile; py_compile.compile\\('utils/gemini.py', doraise=True\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('cogs/stats.py', doraise=True\\); print\\('stats.py OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('database.py', doraise=True\\); print\\('database.py OK'\\)\")"
     ]
   }
 }

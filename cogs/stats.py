@@ -3,6 +3,7 @@ import logging
 import urllib.parse
 import datetime
 
+import aiohttp
 import discord
 from discord.ext import commands
 
@@ -91,7 +92,6 @@ async def _chart_url(chart_config: dict) -> str:
     url = _build_quickchart_url(chart_config)
     if len(url) <= 2048:
         return url
-    import aiohttp
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -118,6 +118,9 @@ def _trend_indicator(current: float, previous: float) -> str:
 
 
 def _format_duration(minutes: int) -> str:
+    if minutes >= 60:
+        h, m = divmod(minutes, 60)
+        return f"{h}h {m}m" if m else f"{h}h"
     return f"{minutes}m"
 
 
@@ -171,7 +174,6 @@ def _compute_streak(daily_rows: list[dict]) -> tuple[int, int]:
     if not active_dates:
         return 0, 0
 
-    today = datetime.date.today().isoformat()
     longest = 1
     current = 1
     for i in range(1, len(active_dates)):
@@ -254,6 +256,14 @@ def _health_label(score: int) -> str:
     if score <= 80:
         return "Healthy"
     return "Thriving"
+
+
+def _weekday_weekend_label(weekday: int, weekend: int) -> str:
+    """Format a weekday/weekend split as 'X% / Y%', or 'N/A' if no data."""
+    total = weekday + weekend
+    if total == 0:
+        return "N/A"
+    return f"{weekday * 100 // total}% / {weekend * 100 // total}%"
 
 
 def _day_name(day_num: int) -> str:
@@ -554,11 +564,7 @@ class Stats(commands.Cog):
         growth_trends = database.get_channel_growth_trends(ctx.guild.id, days)
 
         msgs_per_day = summary["messages"] / max(days, 1)
-        wk_total = wk_split["weekday_msgs"] + wk_split["weekend_msgs"]
-        if wk_total > 0:
-            wk_pct = f"{wk_split['weekday_msgs'] * 100 // wk_total}% / {wk_split['weekend_msgs'] * 100 // wk_total}%"
-        else:
-            wk_pct = "N/A"
+        wk_pct = _weekday_weekend_label(wk_split["weekday_msgs"], wk_split["weekend_msgs"])
 
         # Embed 1: Overview (enhanced)
         e1 = discord.Embed(
@@ -714,15 +720,9 @@ class Stats(commands.Cog):
         top_ch = ctx.guild.get_channel(data["top_channel_id"]) if data["top_channel_id"] else None
         top_ch_name = f"#{top_ch.name}" if top_ch else "N/A"
 
-        voice_sessions_raw = database.get_voice_leaderboard(ctx.guild.id, days, limit=100)
-        user_voice = [r for r in voice_sessions_raw if r["user_id"] == member.id]
         avg_session = 0
-        if user_voice and data["voice_minutes"] > 0:
-            with database.get_conn() as conn:
-                sess_count = conn.execute(
-                    "SELECT COUNT(*) as c FROM voice_sessions WHERE guild_id = ? AND user_id = ? AND joined_at >= ? AND duration_seconds IS NOT NULL",
-                    (ctx.guild.id, member.id, database._days_ago(days)),
-                ).fetchone()["c"]
+        if data["voice_minutes"] > 0:
+            sess_count = database.get_user_voice_session_count(ctx.guild.id, member.id, days)
             avg_session = data["voice_minutes"] // max(sess_count, 1)
 
         data_range_note = (
@@ -801,12 +801,7 @@ class Stats(commands.Cog):
         peak_hour_entry = max(u_hours, key=lambda h: h["count"]) if u_hours else {"hour": 0, "count": 0}
         peak_hour_str = _utc_hour_to_et(peak_hour_entry["hour"]) if peak_hour_entry["count"] > 0 else "N/A"
 
-        # Weekday/weekend split
-        u_wk_total = u_wk["weekday"] + u_wk["weekend"]
-        if u_wk_total > 0:
-            u_wk_pct = f"{u_wk['weekday'] * 100 // u_wk_total}% / {u_wk['weekend'] * 100 // u_wk_total}%"
-        else:
-            u_wk_pct = "N/A"
+        u_wk_pct = _weekday_weekend_label(u_wk["weekday"], u_wk["weekend"])
 
         # Consistency label
         c_score = u_consistency["score"]
@@ -933,11 +928,7 @@ class Stats(commands.Cog):
         e3.set_image(url=await _chart_url(chart_cfg))
 
         # Embed 4: Channel Profile
-        ch_wk_total = ch_wk["weekday"] + ch_wk["weekend"]
-        if ch_wk_total > 0:
-            ch_wk_pct = f"{ch_wk['weekday'] * 100 // ch_wk_total}% / {ch_wk['weekend'] * 100 // ch_wk_total}%"
-        else:
-            ch_wk_pct = "N/A"
+        ch_wk_pct = _weekday_weekend_label(ch_wk["weekday"], ch_wk["weekend"])
 
         ch_gini = ch_concentration["gini"]
         gini_label = "well distributed" if ch_gini < 0.4 else ("moderately diverse" if ch_gini < 0.6 else "concentrated")
