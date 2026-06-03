@@ -174,7 +174,7 @@ def init_db():
 
 
 def _migrate_add_total_words():
-    """Add total_words column to rollup tables (idempotent)."""
+    """Add total_words column to rollup tables and backfill from raw events."""
     with get_conn() as conn:
         for table in ("user_activity_daily", "channel_activity_daily"):
             try:
@@ -182,6 +182,30 @@ def _migrate_add_total_words():
                 logger.info("Added total_words column to %s", table)
             except sqlite3.OperationalError:
                 pass  # Column already exists
+
+        fixed = conn.execute("""
+            UPDATE user_activity_daily SET total_words = COALESCE((
+                SELECT SUM(me.word_count) FROM message_events me
+                WHERE me.guild_id = user_activity_daily.guild_id
+                AND me.user_id = user_activity_daily.user_id
+                AND DATE(me.recorded_at) = user_activity_daily.date
+            ), 0)
+            WHERE total_words = 0 AND message_count > 0
+        """).rowcount
+        if fixed:
+            logger.info("Backfilled total_words for %d user_activity_daily rows", fixed)
+
+        fixed = conn.execute("""
+            UPDATE channel_activity_daily SET total_words = COALESCE((
+                SELECT SUM(me.word_count) FROM message_events me
+                WHERE me.guild_id = channel_activity_daily.guild_id
+                AND me.channel_id = channel_activity_daily.channel_id
+                AND DATE(me.recorded_at) = channel_activity_daily.date
+            ), 0)
+            WHERE total_words = 0 AND message_count > 0
+        """).rowcount
+        if fixed:
+            logger.info("Backfilled total_words for %d channel_activity_daily rows", fixed)
 
 
 def _migrate_timestamps():
@@ -806,7 +830,7 @@ def get_weekday_weekend_split(guild_id: int, days: int) -> dict:
     cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT CAST(strftime('%%w', recorded_at) AS INTEGER) as dow, COUNT(*) as c "
+            "SELECT CAST(strftime('%w', recorded_at) AS INTEGER) as dow, COUNT(*) as c "
             "FROM message_events WHERE guild_id = ? AND recorded_at >= ? GROUP BY dow",
             (guild_id, cutoff),
         ).fetchall()
@@ -975,7 +999,7 @@ def get_user_weekday_split(guild_id: int, user_id: int, days: int) -> dict:
     cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT CAST(strftime('%%w', recorded_at) AS INTEGER) as dow, COUNT(*) as c "
+            "SELECT CAST(strftime('%w', recorded_at) AS INTEGER) as dow, COUNT(*) as c "
             "FROM message_events WHERE guild_id = ? AND user_id = ? AND recorded_at >= ? GROUP BY dow",
             (guild_id, user_id, cutoff),
         ).fetchall()
@@ -1085,7 +1109,7 @@ def get_channel_weekday_split(guild_id: int, channel_id: int, days: int) -> dict
     cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT CAST(strftime('%%w', recorded_at) AS INTEGER) as dow, COUNT(*) as c "
+            "SELECT CAST(strftime('%w', recorded_at) AS INTEGER) as dow, COUNT(*) as c "
             "FROM message_events WHERE guild_id = ? AND channel_id = ? AND recorded_at >= ? GROUP BY dow",
             (guild_id, channel_id, cutoff),
         ).fetchall()
@@ -1169,7 +1193,7 @@ def get_voice_day_of_week(guild_id: int, days: int) -> list:
     cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT CAST(strftime('%%w', joined_at) AS INTEGER) as dow, "
+            "SELECT CAST(strftime('%w', joined_at) AS INTEGER) as dow, "
             "COUNT(*) as sessions, COALESCE(SUM(duration_seconds), 0) / 60 as minutes "
             "FROM voice_sessions WHERE guild_id = ? AND joined_at >= ? AND duration_seconds IS NOT NULL "
             "GROUP BY dow",
@@ -1236,7 +1260,7 @@ def get_join_day_distribution(guild_id: int, days: int) -> list:
     cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT CAST(strftime('%%w', recorded_at) AS INTEGER) as dow, COUNT(*) as c "
+            "SELECT CAST(strftime('%w', recorded_at) AS INTEGER) as dow, COUNT(*) as c "
             "FROM member_events WHERE guild_id = ? AND event_type = 'join' AND recorded_at >= ? "
             "GROUP BY dow",
             (guild_id, cutoff),
@@ -1280,7 +1304,7 @@ def get_hourly_weekday_weekend(guild_id: int, days: int) -> dict:
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT CAST(substr(recorded_at, 12, 2) AS INTEGER) as hour, "
-            "CAST(strftime('%%w', recorded_at) AS INTEGER) as dow, COUNT(*) as c "
+            "CAST(strftime('%w', recorded_at) AS INTEGER) as dow, COUNT(*) as c "
             "FROM message_events WHERE guild_id = ? AND recorded_at >= ? "
             "GROUP BY hour, dow",
             (guild_id, cutoff),
