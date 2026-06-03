@@ -1642,7 +1642,7 @@ class Stats(commands.Cog):
         t0 = time.perf_counter()
         try:
             response = await client.aio.models.generate_content(
-                model="gemini-3.1-flash-lite",
+                model=config.get("gemini.model", "gemini-3-flash-preview"),
                 contents=prompt,
             )
             analysis = response.text

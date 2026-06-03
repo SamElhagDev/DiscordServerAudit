@@ -3,6 +3,7 @@ import logging
 import re
 import time
 
+import config
 from utils.gemini import get_client
 
 logger = logging.getLogger(__name__)
@@ -360,7 +361,7 @@ async def build_plan(query: str) -> dict | None:
     t0 = time.perf_counter()
     try:
         response = await client.aio.models.generate_content(
-            model="gemini-3.1-flash-lite",
+            model=config.get("gemini.model", "gemini-3-flash-preview"),
             contents=prompt,
         )
         elapsed = time.perf_counter() - t0

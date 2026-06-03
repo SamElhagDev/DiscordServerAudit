@@ -107,7 +107,7 @@ class FactCheck(commands.Cog):
         if not client:
             return None
 
-        model = config.get("factcheck.model", "gemini-2.5-flash")
+        model = config.get("factcheck.model", "gemini-3-flash-preview")
         timeout = config.get("factcheck.timeout_seconds", 30)
         t0 = time.perf_counter()
         try:
@@ -380,7 +380,7 @@ class FactCheck(commands.Cog):
         """Show fact-check configuration and usage stats for the current session."""
         enabled = config.get("factcheck.enabled", True)
         emoji = config.get("factcheck.emoji", "\U0001F50D")
-        model = config.get("factcheck.model", "gemini-2.5-flash")
+        model = config.get("factcheck.model", "gemini-3-flash-preview")
         rate_limit = config.get("factcheck.rate_limit", 5)
         cooldown = config.get("factcheck.cooldown_seconds", 300)
         timeout = config.get("factcheck.timeout_seconds", 30)

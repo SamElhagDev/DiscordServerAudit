@@ -44,7 +44,7 @@ async def summarize_findings(findings: list[dict], audit_type: str) -> str | Non
     logger.debug("Requesting Gemini summary | audit_type=%r findings=%d", audit_type, len(findings))
     t0 = time.perf_counter()
     try:
-        model = config.get("gemini.model", "gemini-2.5-flash")
+        model = config.get("gemini.model", "gemini-3-flash-preview")
         response = await client.aio.models.generate_content(
             model=model,
             contents=prompt,
