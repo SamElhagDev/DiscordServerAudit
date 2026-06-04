@@ -1,11 +1,14 @@
 import asyncio
+import dataclasses
 import json
 import logging
 import re
 import time
 
+import aiohttp
 import discord
 from discord.ext import commands
+from google.genai import types as genai_types
 
 import config
 from utils.gemini import get_client
@@ -33,6 +36,26 @@ _CLAIM_EMOJIS = {
     "Unverifiable":    "⚪",      # white circle
 }
 
+_SUPPORTED_IMAGE_TYPES = {
+    "image/jpeg", "image/png", "image/gif", "image/webp",
+    "image/heic", "image/heif",   # iPhone photos
+    "image/avif",                  # modern web format
+    "image/bmp", "image/tiff",    # legacy formats
+}
+
+
+@dataclasses.dataclass
+class ContentBundle:
+    """All extractable content from a single Discord message."""
+    text: str = ""
+    images: list[tuple[bytes, str, str]] = dataclasses.field(default_factory=list)  # (data, mime_type, label)
+    embed_text: str = ""
+    reply_context: str | None = None
+
+    @property
+    def has_content(self) -> bool:
+        return bool(self.text.strip() or self.images or self.embed_text.strip())
+
 
 class FactCheck(commands.Cog):
     """React with an emoji to fact-check any message using AI."""
@@ -55,21 +78,193 @@ class FactCheck(commands.Cog):
         return emoji.name == configured
 
     @staticmethod
-    def _build_prompt(text: str, reply_context: str | None = None) -> str:
-        """Build the Gemini fact-check prompt for *text*, optionally including the message it replies to."""
-        context_block = ""
-        if reply_context:
-            context_block = (
+    def _extract_embed_text(embeds: list[discord.Embed]) -> str:
+        """Pull readable text from a list of Discord embeds."""
+        parts = []
+        for embed in embeds:
+            lines = []
+            if embed.title:
+                lines.append(embed.title)
+            if embed.author and embed.author.name:
+                lines.append(f"Author: {embed.author.name}")
+            if embed.description:
+                lines.append(embed.description)
+            for field in embed.fields:
+                lines.append(f"{field.name}: {field.value}")
+            if embed.footer and embed.footer.text:
+                lines.append(embed.footer.text)
+            if lines:
+                parts.append("\n".join(lines))
+        return "\n---\n".join(parts)
+
+    async def _download_image(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        max_bytes: int | None = None,
+        timeout_seconds: int | None = None,
+    ) -> tuple[bytes, str] | None:
+        """Download an image from *url*. Returns (bytes, content_type) or None."""
+        if max_bytes is None:
+            max_bytes = config.get("factcheck.max_image_bytes", 10_485_760)
+        if timeout_seconds is None:
+            timeout_seconds = config.get("factcheck.image_download_timeout", 5)
+        try:
+            async with session.get(
+                url, timeout=aiohttp.ClientTimeout(total=timeout_seconds)
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning("Image download failed: HTTP %d for %s", resp.status, url)
+                    return None
+                content_type = resp.content_type or ""
+                if content_type not in _SUPPORTED_IMAGE_TYPES:
+                    logger.debug("Skipping unsupported image type %s from %s", content_type, url)
+                    return None
+                content_length = resp.content_length
+                if content_length and content_length > max_bytes:
+                    logger.warning(
+                        "Skipping oversized image: %d bytes (limit %d) from %s",
+                        content_length, max_bytes, url,
+                    )
+                    return None
+                data = await resp.read()
+                if len(data) > max_bytes:
+                    logger.warning(
+                        "Image exceeded size limit after download: %d bytes from %s",
+                        len(data), url,
+                    )
+                    return None
+                return data, content_type
+        except asyncio.TimeoutError:
+            logger.warning("Image download timed out after %ds: %s", timeout_seconds, url)
+            return None
+        except Exception:
+            logger.warning("Image download failed for %s", url, exc_info=True)
+            return None
+
+    async def _fetch_reply_context(self, message: discord.Message) -> str | None:
+        """Return the text content of the message this one replies to, or None."""
+        if not message.reference or not message.reference.message_id:
+            return None
+        try:
+            parent = message.reference.resolved
+            if not isinstance(parent, discord.Message):
+                channel = message.channel
+                parent = await channel.fetch_message(message.reference.message_id)
+            if parent and parent.content and parent.content.strip():
+                logger.info(
+                    "Fact-check includes reply context | parent_msg=%s len=%d",
+                    parent.id, len(parent.content),
+                )
+                return parent.content
+        except (discord.NotFound, discord.Forbidden):
+            logger.debug(
+                "Could not fetch parent message %s — skipping reply context",
+                message.reference.message_id,
+            )
+        except Exception:
+            logger.debug("Error fetching parent message for reply context", exc_info=True)
+        return None
+
+    async def _extract_content(self, message: discord.Message) -> ContentBundle:
+        """Gather all content from *message* into a ContentBundle."""
+        max_images = config.get("factcheck.max_images", 4)
+        images: list[tuple[bytes, str, str]] = []
+
+        async with aiohttp.ClientSession() as session:
+            # 1. Image attachments (highest priority)
+            for att in message.attachments:
+                if len(images) >= max_images:
+                    break
+                ct = att.content_type or ""
+                if ct.startswith("image/") and ct in _SUPPORTED_IMAGE_TYPES:
+                    try:
+                        data = await att.read()
+                        max_bytes = config.get("factcheck.max_image_bytes", 10_485_760)
+                        if len(data) <= max_bytes:
+                            images.append((data, ct, att.filename or "attachment"))
+                        else:
+                            logger.warning("Skipping oversized attachment: %d bytes", len(data))
+                    except Exception:
+                        logger.warning("Failed to read attachment %s", att.filename, exc_info=True)
+
+            # 2. Stickers (PNG/APNG only)
+            for sticker in message.stickers:
+                if len(images) >= max_images:
+                    break
+                if sticker.format in (
+                    discord.StickerFormatType.png,
+                    discord.StickerFormatType.apng,
+                ):
+                    result = await self._download_image(session, str(sticker.url))
+                    if result:
+                        images.append((*result, sticker.name))
+
+            # 3. Video thumbnails
+            for att in message.attachments:
+                if len(images) >= max_images:
+                    break
+                ct = att.content_type or ""
+                if ct.startswith("video/") and att.proxy_url:
+                    result = await self._download_image(session, att.proxy_url)
+                    if result:
+                        images.append((*result, f"{att.filename or 'video'} (thumbnail)"))
+
+            # 4. Embed images / thumbnails (lowest priority)
+            for embed in message.embeds:
+                if len(images) >= max_images:
+                    break
+                img_url = None
+                label = "embed image"
+                if embed.image and embed.image.url:
+                    img_url = embed.image.url
+                elif embed.thumbnail and embed.thumbnail.url:
+                    img_url = embed.thumbnail.url
+                    label = "embed thumbnail"
+                if img_url:
+                    result = await self._download_image(session, img_url)
+                    if result:
+                        images.append((*result, label))
+
+        embed_text = self._extract_embed_text(message.embeds)
+        reply_context = await self._fetch_reply_context(message)
+
+        return ContentBundle(
+            text=message.content or "",
+            images=images,
+            embed_text=embed_text,
+            reply_context=reply_context,
+        )
+
+    @staticmethod
+    def _build_content_parts(bundle: ContentBundle) -> list:
+        """Build a multimodal content parts list for the Gemini API."""
+        parts: list = []
+
+        # 1. Instructions
+        instructions = (
+            "You are an expert fact-checker providing detailed, educational analysis.\n"
+            "Analyze the following Discord message. The message may include text,\n"
+            "images, and embedded link previews. Analyze ALL content together as a\n"
+            "single unit of communication.\n\n"
+        )
+        if bundle.images:
+            instructions += (
+                "If the content includes images, analyze visible text, charts,\n"
+                "data, infographics, and visual claims in the images alongside any\n"
+                "message text.\n\n"
+            )
+
+        # 2. Reply context
+        if bundle.reply_context:
+            instructions += (
                 "This message is a reply to the following original message. Use it as\n"
                 "context to understand what claims are being made or responded to.\n\n"
-                f'Original message being replied to:\n"{reply_context}"\n\n'
+                f'Original message being replied to:\n"{bundle.reply_context}"\n\n'
                 "---\n\n"
             )
 
-        return (
-            "You are an expert fact-checker providing detailed, educational analysis.\n"
-            "Analyze the following message from a Discord server.\n\n"
-            f"{context_block}"
+        instructions += (
             "1. Identify each discrete factual claim in the message.\n"
             "2. For each claim:\n"
             "   - State the claim clearly\n"
@@ -98,21 +293,37 @@ class FactCheck(commands.Cog):
             "    }\n"
             "  ]\n"
             "}\n\n"
-            f'Message to check:\n"{text}"'
         )
 
-    async def _call_gemini(self, prompt: str) -> dict | None:
-        """Send *prompt* to the configured Gemini model, return parsed dict or None."""
+        # 3. Message text
+        if bundle.text.strip():
+            instructions += f'Message text:\n"{bundle.text}"\n\n'
+
+        # 4. Embed text
+        if bundle.embed_text.strip():
+            instructions += f"Embedded content (link previews):\n{bundle.embed_text}\n\n"
+
+        parts.append(instructions)
+
+        # 5. Image parts
+        for i, (data, mime_type, label) in enumerate(bundle.images, 1):
+            parts.append(f"Attached image {i} ({label}):")
+            parts.append(genai_types.Part.from_bytes(data=data, mime_type=mime_type))
+
+        return parts
+
+    async def _call_gemini(self, contents: list) -> dict | None:
+        """Send *contents* to the configured Gemini model, return parsed dict or None."""
         client = get_client()
         if not client:
             return None
 
         model = config.get("factcheck.model", "gemini-3-flash-preview")
-        timeout = config.get("factcheck.timeout_seconds", 30)
+        timeout = config.get("factcheck.timeout_seconds", 45)
         t0 = time.perf_counter()
         try:
             response = await asyncio.wait_for(
-                client.aio.models.generate_content(model=model, contents=prompt),
+                client.aio.models.generate_content(model=model, contents=contents),
                 timeout=timeout,
             )
             elapsed = time.perf_counter() - t0
@@ -292,38 +503,27 @@ class FactCheck(commands.Cog):
             logger.error("Failed to fetch message %s for fact-check", payload.message_id, exc_info=True)
             return
 
-        text = message.content
-        if not text or not text.strip():
-            return  # Skip image-only / embed-only messages
-
-        # Resolve reply context if the tagged message is itself a reply
-        reply_context = None
-        if message.reference and message.reference.message_id:
-            try:
-                parent = message.reference.resolved
-                if not isinstance(parent, discord.Message):
-                    parent = await channel.fetch_message(message.reference.message_id)
-                if parent and parent.content and parent.content.strip():
-                    reply_context = parent.content
-                    logger.info(
-                        "Fact-check includes reply context | parent_msg=%s len=%d",
-                        parent.id, len(reply_context),
-                    )
-            except (discord.NotFound, discord.Forbidden):
-                logger.debug("Could not fetch parent message %s — skipping reply context", message.reference.message_id)
-            except Exception:
-                logger.debug("Error fetching parent message for reply context", exc_info=True)
+        # Extract all content (text, images, embeds, reply context)
+        bundle = await self._extract_content(message)
+        if not bundle.has_content:
+            return
 
         logger.info(
-            "Fact-check triggered | guild=%s channel=#%s user=%s msg=%s len=%d has_reply_context=%s",
+            "Fact-check triggered | guild=%s channel=#%s user=%s msg=%s "
+            "text_len=%d images=%d embed_text_len=%d has_reply_context=%s",
             payload.guild_id, getattr(channel, "name", "?"),
-            payload.user_id, payload.message_id, len(text), reply_context is not None,
+            payload.user_id, payload.message_id,
+            len(bundle.text), len(bundle.images),
+            len(bundle.embed_text), bundle.reply_context is not None,
         )
 
-        # Send "Checking..." placeholder, then edit with result
+        # Send "Checking..." placeholder
+        description = "Analyzing claims — this usually takes a few seconds."
+        if bundle.images:
+            description = f"Analyzing text and {len(bundle.images)} image(s) — this may take a moment."
         checking_embed = discord.Embed(
             title="\U0001F50D  Checking...",
-            description="Analyzing claims — this usually takes a few seconds.",
+            description=description,
             color=0x95A5A6,
         )
         try:
@@ -334,8 +534,8 @@ class FactCheck(commands.Cog):
 
         # Call Gemini
         t0 = time.perf_counter()
-        prompt = self._build_prompt(text, reply_context=reply_context)
-        result = await self._call_gemini(prompt)
+        contents = self._build_content_parts(bundle)
+        result = await self._call_gemini(contents)
         elapsed = time.perf_counter() - t0
 
         if result is None:

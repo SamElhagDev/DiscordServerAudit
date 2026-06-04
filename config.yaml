@@ -50,7 +50,10 @@ gemini:
 factcheck:
   enabled: true                    # Master toggle for fact-check feature
   emoji: "\U0001F50D"             # Emoji name or unicode char that triggers fact-check (magnifying glass)
-  model: "gemini-3-flash-preview"       # Gemini model for fact-checking (accuracy over speed)
+  model: "gemini-3-flash-preview"  # Gemini model for fact-checking
   rate_limit: 5                    # Max fact-checks per user per hour
   cooldown_seconds: 300            # Seconds before same message can be re-checked
-  timeout_seconds: 30              # Max seconds to wait for Gemini response
+  timeout_seconds: 45              # Max seconds to wait for Gemini response (raised for multimodal)
+  max_images: 4                    # Max images to include per fact-check
+  max_image_bytes: 10485760        # Max size per image in bytes (10 MB)
+  image_download_timeout: 5        # Seconds to wait per image download
