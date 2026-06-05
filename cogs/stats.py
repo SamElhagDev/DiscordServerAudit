@@ -1511,7 +1511,7 @@ class Stats(commands.Cog):
         def compare_row(label, v1, v2, fmt="{:,}"):
             s1_str = fmt.format(v1) if isinstance(v1, (int, float)) else str(v1)
             s2_str = fmt.format(v2) if isinstance(v2, (int, float)) else str(v2)
-            indicator = ">" if v1 > v2 else ("<" if v2 > v1 else "=")
+            indicator = "<" if v1 > v2 else (">" if v2 > v1 else "=")
             return f"{label:<10} {s1_str:>5} {indicator} {s2_str:<5}"
 
         n1 = user1.display_name[:8]
