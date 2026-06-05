@@ -1069,18 +1069,18 @@ class Stats(commands.Cog):
             hist_lines.append(f"{label:>6}  {bar} {count:>3} ({pct:>3}%)")
 
         # Day-of-week session bars
-        dow_bars = []
+        dow_lines = []
         dow_max = max((d["sessions"] for d in v_dow), default=1) or 1
-        blocks = "░▁▂▃▄▅▆▇█"
         for d in v_dow:
-            idx = min(int(d["sessions"] / dow_max * 8), 8)
-            dow_bars.append(f"{_day_name(d['day'])} {blocks[idx]}")
+            bar_len = int(d["sessions"] / dow_max * 10) if dow_max else 0
+            bar = "█" * bar_len + "░" * (10 - bar_len)
+            dow_lines.append(f"{_day_name(d['day'])} {bar} {d['sessions']:>3}")
 
         desc = (
             "**Session Length Distribution:**\n```\n"
             + "\n".join(hist_lines)
-            + "\n```\n**Sessions by Day of Week:**\n```\n  "
-            + "  ".join(dow_bars)
+            + "\n```\n**Sessions by Day of Week:**\n```\n"
+            + "\n".join(dow_lines)
             + "\n```"
         )
         e5 = discord.Embed(title="\U0001f4ca Session Analysis", description=desc, color=COLOR_VOICE)
@@ -1160,17 +1160,19 @@ class Stats(commands.Cog):
         e2.set_image(url=await _chart_url(chart_cfg))
 
         # Embed 3: Daily breakdown table
-        table_lines = ["Date        Joins Leaves   Net", "─" * 32]
+        hdr = f"{'Date':<10} {'In':>3} {'Out':>3} {'Net':>4}"
+        table_lines = [hdr, "─" * len(hdr)]
         for row in events["daily"]:
             d = row["date"]
             j = row["joins"]
             lv = row["leaves"]
             n = j - lv
-            sign = "+" if n >= 0 else ""
-            table_lines.append(f"{d}  {j:>5} {lv:>6}  {sign}{n:>3}")
+            net_s = f"+{n}" if n >= 0 else str(n)
+            table_lines.append(f"{d} {j:>3} {lv:>3} {net_s:>4}")
         total_net = joins - leaves
-        table_lines.append("─" * 32)
-        table_lines.append(f"{'Total':<12}{joins:>5} {leaves:>6}  {'+' if total_net >= 0 else ''}{total_net:>3}")
+        total_net_s = f"+{total_net}" if total_net >= 0 else str(total_net)
+        table_lines.append("─" * len(hdr))
+        table_lines.append(f"{'Total':<10} {joins:>3} {leaves:>3} {total_net_s:>4}")
         e3 = discord.Embed(
             title="\U0001f4c5 Daily Activity (Last 7 Days)",
             description="```\n" + "\n".join(table_lines) + "\n```",
@@ -1212,12 +1214,12 @@ class Stats(commands.Cog):
         online_ratio = (online_count / current * 100) if current else 0
 
         # Joins by day-of-week bars
-        blocks = "░▁▂▃▄▅▆▇█"
         dow_max = max((d["count"] for d in join_dow), default=1) or 1
-        dow_bars = []
+        dow_lines = []
         for d in join_dow:
-            idx = min(int(d["count"] / dow_max * 8), 8)
-            dow_bars.append(f"{_day_name(d['day'])} {blocks[idx]}")
+            bar_len = int(d["count"] / dow_max * 10) if dow_max else 0
+            bar = "█" * bar_len + "░" * (10 - bar_len)
+            dow_lines.append(f"{_day_name(d['day'])} {bar} {d['count']:>3}")
 
         e5 = discord.Embed(title="\U0001f4ca Member Lifecycle", color=COLOR_NEUTRAL)
         e5.add_field(name="\U0001f4c5 Busiest Join Day", value=busiest_join_name, inline=True)
@@ -1225,7 +1227,7 @@ class Stats(commands.Cog):
         e5.add_field(name="\U0001f4ca Online Ratio (avg)", value=f"{online_ratio:.0f}% of members online", inline=True)
         e5.add_field(
             name="Joins by Day of Week",
-            value="```\n  " + "  ".join(dow_bars) + "\n```",
+            value="```\n" + "\n".join(dow_lines) + "\n```",
             inline=False,
         )
         e5.set_footer(text=f"{days}-day window")
@@ -1508,7 +1510,7 @@ class Stats(commands.Cog):
         def compare_row(label, v1, v2, fmt="{:,}"):
             s1_str = fmt.format(v1) if isinstance(v1, (int, float)) else str(v1)
             s2_str = fmt.format(v2) if isinstance(v2, (int, float)) else str(v2)
-            indicator = "◄" if v1 > v2 else ("►" if v2 > v1 else "=")
+            indicator = "►" if v1 > v2 else ("◄" if v2 > v1 else "=")
             return f"{label:<20} {s1_str:>8}  {indicator}  {s2_str:<8}"
 
         rows = [
