@@ -78,7 +78,8 @@ def _build_bar_chart(items: list[tuple], max_width: int = 20) -> str:
     for i, (label, value) in enumerate(items):
         bar_len = int((value / max_val) * max_width) if max_val else 0
         bar = "█" * bar_len + "░" * (max_width - bar_len)
-        lines.append(f"#{i+1:<2} {str(label):<{label_width}}  {bar} {value:,}")
+        rank = f"{'#' + str(i+1):<4}"
+        lines.append(f"{rank}{str(label):<{label_width}}  {bar} {value:,}")
     return "```\n" + "\n".join(lines) + "\n```"
 
 
@@ -835,7 +836,7 @@ class Stats(commands.Cog):
         heatmap = _build_heatmap_bar(u_hours)
         e4.add_field(
             name="⏰ Hourly Activity",
-            value=f"```\n{heatmap}\n00    06    12    18    23\n```",
+            value=f"```\n{heatmap}\n0     6    12    18   23\n```",
             inline=False,
         )
         e4.set_footer(text=f"{days}-day window")
@@ -942,7 +943,7 @@ class Stats(commands.Cog):
         ch_heatmap_bar = _build_heatmap_bar(ch_heatmap)
         e4.add_field(
             name="⏰ Hourly Activity",
-            value=f"```\n{ch_heatmap_bar}\n00    06    12    18    23\n```",
+            value=f"```\n{ch_heatmap_bar}\n0     6    12    18   23\n```",
             inline=False,
         )
         e4.set_footer(text=f"{days}-day window")
@@ -1018,7 +1019,7 @@ class Stats(commands.Cog):
         lines = user_chart.strip("`\n").split("\n")
         formatted_lines = []
         for i, (name, mins) in enumerate(user_items[:5]):
-            formatted_lines.append(f"#{i+1:<2} {name:<16}  {_format_duration(mins)}")
+            formatted_lines.append(f"{'#' + str(i+1):<3} {name:<16}  {_format_duration(mins)}")
         e2 = discord.Embed(
             title="\U0001f3c6 Voice Leaderboard",
             description="```\n" + "\n".join(formatted_lines) + "\n```" if formatted_lines else "No data",
@@ -1033,7 +1034,7 @@ class Stats(commands.Cog):
             chan_items.append((name, row["total"] // 60))
         formatted_ch = []
         for i, (name, mins) in enumerate(chan_items[:5]):
-            formatted_ch.append(f"#{i+1:<2} {name:<20}  {_format_duration(mins)}")
+            formatted_ch.append(f"{'#' + str(i+1):<3} {name:<20}  {_format_duration(mins)}")
         e3 = discord.Embed(
             title="\U0001f4cc Channel Usage",
             description="```\n" + "\n".join(formatted_ch) + "\n```" if formatted_ch else "No data",
@@ -1065,7 +1066,7 @@ class Stats(commands.Cog):
             bar_len = int((count / max_bucket) * 20) if max_bucket else 0
             bar = "█" * bar_len + "░" * (20 - bar_len)
             pct = count * 100 // total_sessions
-            hist_lines.append(f"  {label:<6} {bar} {count:>3} ({pct}%)")
+            hist_lines.append(f"{label:>6}  {bar} {count:>3} ({pct:>3}%)")
 
         # Day-of-week session bars
         dow_bars = []
@@ -1159,17 +1160,17 @@ class Stats(commands.Cog):
         e2.set_image(url=await _chart_url(chart_cfg))
 
         # Embed 3: Daily breakdown table
-        table_lines = ["Date          Joins  Leaves  Net", "─" * 38]
+        table_lines = ["Date        Joins Leaves   Net", "─" * 32]
         for row in events["daily"]:
             d = row["date"]
             j = row["joins"]
             lv = row["leaves"]
             n = j - lv
             sign = "+" if n >= 0 else ""
-            table_lines.append(f"{d}    {j:>3}     {lv:>3}   {sign}{n:>3}")
+            table_lines.append(f"{d}  {j:>5} {lv:>6}  {sign}{n:>3}")
         total_net = joins - leaves
-        table_lines.append("─" * 38)
-        table_lines.append(f"{'Total':<14}{joins:>3}     {leaves:>3}   {'+' if total_net >= 0 else ''}{total_net:>3}")
+        table_lines.append("─" * 32)
+        table_lines.append(f"{'Total':<12}{joins:>5} {leaves:>6}  {'+' if total_net >= 0 else ''}{total_net:>3}")
         e3 = discord.Embed(
             title="\U0001f4c5 Daily Activity (Last 7 Days)",
             description="```\n" + "\n".join(table_lines) + "\n```",
@@ -1292,10 +1293,12 @@ class Stats(commands.Cog):
             for c in per_channel:
                 ch = ctx.guild.get_channel(c["channel_id"])
                 ch_name = f"#{ch.name}" if ch else f"#{c['channel_id']}"
-                bar_len = int((c["total_msgs"] / ch_max) * 22)
-                bar = "█" * bar_len + "░" * (22 - bar_len)
+                if len(ch_name) > 14:
+                    ch_name = ch_name[:13] + "…"
+                bar_len = int((c["total_msgs"] / ch_max) * 16)
+                bar = "█" * bar_len + "░" * (16 - bar_len)
                 peak_str = _utc_hour_to_et(c["peak_hour"])
-                chan_lines.append(f"  {ch_name:<14} {bar}  Peak: {peak_str}")
+                chan_lines.append(f"{ch_name:<14} {bar} Peak:{peak_str}")
 
         # Weekday vs weekend heatmap comparison
         wk_heatmap = _build_heatmap_bar(wk_hours.get("weekday", []))
@@ -1305,7 +1308,7 @@ class Stats(commands.Cog):
         if chan_lines:
             desc_parts.append("**Top 5 Channels by Activity:**\n```\n" + "\n".join(chan_lines) + "\n```")
         desc_parts.append(
-            f"**Weekday vs Weekend:**\n```\nWkday {wk_heatmap}\nWkend {we_heatmap}\n00    06    12    18    23\n```"
+            f"**Weekday vs Weekend:**\n```\nWkday {wk_heatmap}\nWkend {we_heatmap}\n      0     6    12    18   23\n```"
         )
 
         e2 = discord.Embed(title="\U0001f4ca Peak Hours by Channel", description="\n".join(desc_parts), color=COLOR_NEUTRAL)
@@ -1447,15 +1450,14 @@ class Stats(commands.Cog):
         # Build bar chart
         max_val = max(e["value"] for e in entries) if entries else 1
         lines = []
-        medals = ["🥇", "🥈", "🥉"]
         for i, entry in enumerate(entries):
             member = ctx.guild.get_member(entry["user_id"])
             name = member.display_name if member else f"User {entry['user_id']}"
             bar_len = int((entry["value"] / max_val) * 20) if max_val else 0
             bar = "█" * bar_len + "░" * (20 - bar_len)
-            prefix = medals[i] if i < 3 else f"#{i+1}"
+            rank = f"{'#' + str(i+1):<4}"
             val_str = fmt_value(entry["value"], category)
-            lines.append(f"{prefix} {name:<16} {bar} {val_str}")
+            lines.append(f"{rank}{name:<16} {bar} {val_str}")
 
         category_labels = {
             "messages": "Messages",
@@ -1510,18 +1512,18 @@ class Stats(commands.Cog):
             return f"{label:<20} {s1_str:>8}  {indicator}  {s2_str:<8}"
 
         rows = [
-            compare_row("\U0001f4ac Messages", d1["message_count"], d2["message_count"]),
-            compare_row("\U0001f3a4 Voice", d1["voice_minutes"], d2["voice_minutes"], "{:,}m"),
-            compare_row("\U0001f504 Reactions Given", d1["reactions_given"], d2["reactions_given"]),
-            compare_row("\U0001f504 Reactions Recv", d1["reactions_received"], d2["reactions_received"]),
-            compare_row("\U0001f4dd Avg Words", w1["avg_words"], w2["avg_words"], "{:.1f}"),
-            compare_row("\U0001f525 Current Streak", s1["current"], s2["current"], "{}d"),
-            compare_row("\U0001f3af Consistency", c1["score"], c2["score"], "{:.0f}"),
-            f"{'📌 Top Channel':<20} {ch1_name:>8}  —  {ch2_name:<8}",
+            compare_row("Messages", d1["message_count"], d2["message_count"]),
+            compare_row("Voice", d1["voice_minutes"], d2["voice_minutes"], "{:,}m"),
+            compare_row("Reactions Given", d1["reactions_given"], d2["reactions_given"]),
+            compare_row("Reactions Recv", d1["reactions_received"], d2["reactions_received"]),
+            compare_row("Avg Words", w1["avg_words"], w2["avg_words"], "{:.1f}"),
+            compare_row("Current Streak", s1["current"], s2["current"], "{}d"),
+            compare_row("Consistency", c1["score"], c2["score"], "{:.0f}"),
+            compare_row("Top Channel", ch1_name, ch2_name),
         ]
 
         # Embed 1: Head-to-Head
-        header = f"{'':20} {user1.display_name:>8}     {user2.display_name:<8}"
+        header = f"{'Metric':<20} {user1.display_name:>8}     {user2.display_name:<8}"
         desc = "```\n" + header + "\n" + "─" * len(header) + "\n" + "\n".join(rows) + "\n```"
         embed1 = discord.Embed(
             title=f"⚔️ {user1.display_name} vs {user2.display_name} — Last {days} Days",
