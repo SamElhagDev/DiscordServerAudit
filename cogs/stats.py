@@ -69,17 +69,22 @@ CHART_GRID = "rgba(255,255,255,0.1)"
 # Utility functions
 # ---------------------------------------------------------------------------
 
-def _build_bar_chart(items: list[tuple], max_width: int = 12) -> str:
+def _build_bar_chart(items: list[tuple], max_width: int = 12, show_pct: bool = False) -> str:
     if not items:
         return "```\nNo data\n```"
     max_val = max(v for _, v in items)
+    total = sum(v for _, v in items) if show_pct else 0
     lines = []
     max_label = 12
     for i, (label, value) in enumerate(items):
         bar_len = int((value / max_val) * max_width) if max_val else 0
         bar = "█" * bar_len + "░" * (max_width - bar_len)
         name = str(label)[:max_label]
-        lines.append(f"{name:<{max_label}} {bar} {value:,}")
+        if show_pct and total:
+            pct = value * 100 // total
+            lines.append(f"{name:<{max_label}} {bar} {pct:>2}%")
+        else:
+            lines.append(f"{name:<{max_label}} {bar} {value:,}")
     return "```\n" + "\n".join(lines) + "\n```"
 
 
@@ -119,6 +124,8 @@ def _trend_indicator(current: float, previous: float) -> str:
 
 
 def _format_duration(minutes: int) -> str:
+    if minutes <= 0:
+        return "—"
     if minutes >= 60:
         h, m = divmod(minutes, 60)
         return f"{h}h {m}m" if m else f"{h}h"
@@ -275,10 +282,12 @@ def _day_name(day_num: int) -> str:
     return ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")[day_num % 7]
 
 
-def _build_heatmap_bar(hours_data: list, width: int = 24) -> str:
+def _build_heatmap_bar(hours_data: list, width: int = 24, offset: int = 0) -> str:
     """Build a 24-char heatmap bar from hourly data using block characters.
 
     *hours_data* is a list of dicts with 'hour' (0-23) and 'count' keys.
+    *offset* rotates the bar so position 0 represents local hour 0
+    (pass ``_et_offset()[0]`` to convert UTC → ET).
     Returns a string like '░░░░░░▁▂▃▅▆██████▇▆▅▃▂▁░'.
     """
     blocks = "░▁▂▃▄▅▆▇█"
@@ -290,7 +299,7 @@ def _build_heatmap_bar(hours_data: list, width: int = 24) -> str:
     mx = max(counts) if counts else 0
     if mx == 0:
         return "░" * width
-    return "".join(blocks[min(int(counts[h] / mx * 8), 8)] for h in range(width))
+    return "".join(blocks[min(int(counts[(h - offset) % 24] / mx * 8), 8)] for h in range(width))
 
 
 # ---------------------------------------------------------------------------
@@ -781,21 +790,18 @@ class Stats(commands.Cog):
         e2.set_image(url=await _chart_url(chart_cfg))
 
         # Embed 3: Channel breakdown
-        total_msgs = sum(v for _, v in data["channel_breakdown"])
         chan_items = []
         other_count = 0
         for i, (ch_id, count) in enumerate(data["channel_breakdown"]):
             if i < 5:
                 ch = ctx.guild.get_channel(ch_id)
                 name = f"#{ch.name}" if ch else f"#{ch_id}"
-                pct = (count / total_msgs * 100) if total_msgs else 0
-                chan_items.append((f"{name} ({pct:.0f}%)", count))
+                chan_items.append((name, count))
             else:
                 other_count += count
         if other_count > 0:
-            pct = (other_count / total_msgs * 100) if total_msgs else 0
-            chan_items.append((f"other ({pct:.0f}%)", other_count))
-        e3 = discord.Embed(title="\U0001f4cc Channel Activity", description=_build_bar_chart(chan_items), color=color)
+            chan_items.append(("other", other_count))
+        e3 = discord.Embed(title="\U0001f4cc Channel Activity", description=_build_bar_chart(chan_items, show_pct=True), color=color)
 
         # Embed 4: Activity Profile
         # Determine most active hour
@@ -832,10 +838,11 @@ class Stats(commands.Cog):
         e4.add_field(name="❤️ Engagement Ratio", value=f"{u_engagement['reaction_per_msg']:.2f} reactions/msg sent", inline=True)
         e4.add_field(name="\U0001f4c8 Active Day %", value=f"{active_pct:.0f}% of days since join", inline=True)
 
-        # Hourly heatmap bar
-        heatmap = _build_heatmap_bar(u_hours)
+        # Hourly heatmap bar (converted to ET)
+        _off, _abbr = _et_offset()
+        heatmap = _build_heatmap_bar(u_hours, offset=_off)
         e4.add_field(
-            name="⏰ Hourly Activity",
+            name=f"⏰ Hourly Activity ({_abbr})",
             value=f"```\n{heatmap}\n0     6    12    18   23\n```",
             inline=False,
         )
@@ -901,18 +908,16 @@ class Stats(commands.Cog):
         e1.add_field(name="\U0001f4ca Top-3 Share", value=f"{ch_concentration['top3_share']:.0f}%", inline=True)
 
         # Embed 2: Top contributors
-        total_chan = sum(v for _, v in data["top_users"])
         user_items = []
         remaining = 0
         for i, (uid, count) in enumerate(data["top_users"]):
             if i < 5:
                 m = ctx.guild.get_member(uid)
                 name = m.display_name if m else f"User {uid}"
-                pct = (count / total_chan * 100) if total_chan else 0
-                user_items.append((f"{name} ({pct:.0f}%)", count))
+                user_items.append((name, count))
             else:
                 remaining += count
-        e2 = discord.Embed(title="\U0001f3c6 Top Contributors", description=_build_bar_chart(user_items), color=color)
+        e2 = discord.Embed(title="\U0001f3c6 Top Contributors", description=_build_bar_chart(user_items, show_pct=True), color=color)
         if remaining > 0:
             others = len(data["top_users"]) - 5
             e2.set_footer(text=f"{others} other user(s) contributed {remaining:,} messages")
@@ -940,9 +945,10 @@ class Stats(commands.Cog):
         e4.add_field(name="\U0001f4c8 Growth vs Prior", value=ch_growth_text, inline=True)
         e4.add_field(name="\U0001f4ca User Concentration", value=f"{ch_gini:.2f} Gini ({gini_label})", inline=True)
 
-        ch_heatmap_bar = _build_heatmap_bar(ch_heatmap)
+        _off, _abbr = _et_offset()
+        ch_heatmap_bar = _build_heatmap_bar(ch_heatmap, offset=_off)
         e4.add_field(
-            name="⏰ Hourly Activity",
+            name=f"⏰ Hourly Activity ({_abbr})",
             value=f"```\n{ch_heatmap_bar}\n0     6    12    18   23\n```",
             inline=False,
         )
@@ -1015,8 +1021,6 @@ class Stats(commands.Cog):
             m = ctx.guild.get_member(row["user_id"])
             name = m.display_name if m else f"User {row['user_id']}"
             user_items.append((name, row["total"]))
-        user_chart = _build_bar_chart([(n, v) for n, v in user_items[:5]])
-        lines = user_chart.strip("`\n").split("\n")
         formatted_lines = []
         for i, (name, mins) in enumerate(user_items[:5]):
             trunc = name[:18]
@@ -1271,12 +1275,16 @@ class Stats(commands.Cog):
 
         lines = []
         max_h = max(by_hour.values()) if by_hour else 1
+        if _ET is not None:
+            _et_off = int(datetime.datetime.now(datetime.timezone.utc).astimezone(_ET).utcoffset().total_seconds() // 3600)
+        else:
+            _et_off = _et_offset()[0]
         for h in range(24):
             count = by_hour.get(h, 0)
             pct = (count / total * 100) if total else 0
             bar_len = int((count / max_h) * 14) if max_h else 0
             bar = "█" * bar_len + "░" * (14 - bar_len)
-            et_h = (h + (_et_offset()[0] if _ET is None else int(datetime.datetime.now(datetime.timezone.utc).astimezone(_ET).utcoffset().total_seconds() // 3600))) % 24
+            et_h = (h + _et_off) % 24
             lines.append(f"{et_h:>2}:00 {bar} {pct:>4.1f}%")
 
         # Embed 1: Hourly Distribution (enhanced)
@@ -1303,15 +1311,15 @@ class Stats(commands.Cog):
                 peak_str = _utc_hour_to_et(c["peak_hour"])
                 chan_lines.append(f"{ch_name:<16} {peak_str}")
 
-        # Weekday vs weekend heatmap comparison
-        wk_heatmap = _build_heatmap_bar(wk_hours.get("weekday", []))
-        we_heatmap = _build_heatmap_bar(wk_hours.get("weekend", []))
+        # Weekday vs weekend heatmap comparison (ET)
+        wk_heatmap = _build_heatmap_bar(wk_hours.get("weekday", []), offset=_et_off)
+        we_heatmap = _build_heatmap_bar(wk_hours.get("weekend", []), offset=_et_off)
 
         desc_parts = []
         if chan_lines:
             desc_parts.append("**Top 5 Channels by Activity:**\n```\n" + "\n".join(chan_lines) + "\n```")
         desc_parts.append(
-            f"**Weekday vs Weekend (hourly):**\n```\n{wk_heatmap} Wk\n{we_heatmap} We\n0     6    12    18   23\n```"
+            f"**Hourly — Weekday (top) vs Weekend:**\n```\n{wk_heatmap}\n{we_heatmap}\n0     6    12    18   23\n```"
         )
 
         e2 = discord.Embed(title="\U0001f4ca Peak Hours by Channel", description="\n".join(desc_parts), color=COLOR_NEUTRAL)
@@ -1411,13 +1419,9 @@ class Stats(commands.Cog):
         embed.add_field(name="\U0001f525 Right Now", value=right_now, inline=False)
 
         # Engagement
-        engagement = (
-            f"DAU/MAU: {dau_wau_mau['dau_mau'] * 100:.0f}%  •  "
-            f"Avg Msg Length: {word_stats['avg_words_per_msg']:.1f} words\n"
-            f"Reactions/Msg: {reaction_per_msg:.2f}  •  "
-            f"Voice/Text Ratio: {voice_text_ratio:.1f}"
-        )
-        embed.add_field(name="\U0001f4ca Engagement", value=engagement, inline=False)
+        embed.add_field(name="\U0001f4ca DAU/MAU", value=f"{dau_wau_mau['dau_mau'] * 100:.0f}%", inline=True)
+        embed.add_field(name="\U0001f4dd Avg Msg Length", value=f"{word_stats['avg_words_per_msg']:.1f} words", inline=True)
+        embed.add_field(name="\U0001f504 Reactions/Msg", value=f"{reaction_per_msg:.2f}", inline=True)
 
         embed.set_footer(text=f"Snapshot at {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
         if guild.icon:
@@ -1511,7 +1515,7 @@ class Stats(commands.Cog):
         def compare_row(label, v1, v2, fmt="{:,}"):
             s1_str = fmt.format(v1) if isinstance(v1, (int, float)) else str(v1)
             s2_str = fmt.format(v2) if isinstance(v2, (int, float)) else str(v2)
-            indicator = "<" if v1 > v2 else (">" if v2 > v1 else "=")
+            indicator = ">" if v1 > v2 else ("<" if v2 > v1 else "=")
             return f"{label:<12} {s1_str:>7} {indicator} {s2_str:<7}"
 
         n1 = user1.display_name[:8]
