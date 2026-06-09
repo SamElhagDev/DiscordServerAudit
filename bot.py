@@ -7,6 +7,7 @@ import time
 import discord
 from discord.ext import commands
 
+__version__ = os.environ.get("DiscordServerAudit_VERSION", "1.0.0")
 
 # ---------------------------------------------------------------------------
 # Logging — configured first so every module's logger picks up the handlers
@@ -24,7 +25,7 @@ def _setup_logging() -> str:
         "logs",
     )
     os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, "bot.log")
+    log_path = os.path.join(log_dir, os.environ.get("DiscordServerAudit_LOG_FILE", "DiscordServerAudit.log"))
 
     fmt = logging.Formatter(
         "%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
@@ -124,6 +125,7 @@ class AdminBot(commands.Bot):
         member_count = sum((g.member_count or 0) for g in self.guilds)
 
         logger.info("=" * 60)
+        logger.info("DiscordServerAudit v%s", __version__)
         logger.info("Bot ready: %s (ID=%s)", self.user, self.user.id)
         logger.info("Guilds: %d | Members: %d | Startup: %.2fs", guild_count, member_count, elapsed)
         logger.info("Prefix: %r | Admin role: %r", self.command_prefix, config.get("admin_role"))

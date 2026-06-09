@@ -83,7 +83,8 @@ class RichHelpCommand(commands.HelpCommand):
                 inline=False,
             )
 
-        embed.set_footer(text=f"Prefix: {prefix}  •  Scheduled audits run automatically")
+        from bot import __version__
+        embed.set_footer(text=f"v{__version__}  •  Prefix: {prefix}  •  Scheduled audits run automatically")
         await self.get_destination().send(embed=embed)
 
     # ------------------------------------------------------------------

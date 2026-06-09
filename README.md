@@ -180,6 +180,8 @@ Set these under **Settings → Secrets and variables → Actions**:
 | `DiscordServerAudit_GEMINI_KEY` | No | Google Gemini API key (enables AI features: insights, fact-check, natural language, audit action plans) |
 | `DiscordServerAudit_FACTCHECK_EMOJI` | No | Custom emoji for fact-check trigger (default: magnifying glass) |
 | `DiscordServerAudit_PREFIX` | No | Bot command prefix (default: `!`) |
+| `DiscordServerAudit_LOG_FILE` | No | Log file name (default: `DiscordServerAudit.log`) |
+| `DiscordServerAudit_VERSION` | No | Version string shown at startup and in help footer (default: `1.0.0`) |
 
 ### What the workflow does
 1. Lints with flake8
