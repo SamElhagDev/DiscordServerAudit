@@ -358,6 +358,15 @@ ACTIONS = [
         "parameters": {"channel_name": "Channel name without #", "message_id": "Message ID to unpin"},
         "is_destructive": False,
     },
+    {
+        "name": "create_emoji_from_avatar",
+        "description": "Create a new custom server emoji from a member's avatar image",
+        "parameters": {
+            "member_name": "Username or display name of the member whose avatar to use",
+            "emoji_name": "Name for the new emoji (letters, numbers, underscores only)",
+        },
+        "is_destructive": False,
+    },
     # ── Voice moderation ───────────────────────────────────────────────────────
     {
         "name": "vc_mute",

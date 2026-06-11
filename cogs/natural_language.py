@@ -9,6 +9,7 @@ from discord.ext import commands
 import config
 from utils.permissions import has_admin_role, build_embed
 from utils.planner import build_plan
+from utils.media import sanitize_emoji_name, avatar_emoji_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -1319,6 +1320,25 @@ class NaturalLanguage(commands.Cog):
             names = ", ".join(m.display_name for m in admins[:25])
             overflow = f" (+{len(admins) - 25} more)" if len(admins) > 25 else ""
             return f"**{len(admins)} member(s) with Administrator:** {names}{overflow}"
+
+        if action == "create_emoji_from_avatar":
+            raw = params.get("member_name", "")
+            member = resolve_member(guild, raw)
+            if not member:
+                return _member_not_found(guild, raw)
+            emoji_name = sanitize_emoji_name(params.get("emoji_name") or member.name)
+            data = await avatar_emoji_bytes(member)
+            if data is None:
+                return f"Couldn't shrink **{member.display_name}**'s avatar under Discord's 256 KB emoji limit."
+            try:
+                emoji = await guild.create_custom_emoji(
+                    name=emoji_name, image=data,
+                    reason=f"Created by {ctx.author} from {member}'s avatar",
+                )
+            except discord.HTTPException as e:
+                return f"Couldn't create emoji: {e.text or e} (emoji slots may be full, or I lack the Manage Expressions permission)."
+            logger.info("create_emoji_from_avatar | source=%s emoji=:%s: | guild=%r", member, emoji.name, guild.name)
+            return f"Created {emoji} `:{emoji.name}:` from **{member.display_name}**'s avatar."
 
         logger.error("No executor implemented for action %r", action)
         return f"Executor for `{action}` is not implemented."
