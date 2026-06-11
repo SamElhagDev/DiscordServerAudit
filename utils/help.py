@@ -6,6 +6,8 @@ from discord.ext import commands
 _COG_COLORS = {
     "Admin":           discord.Color.blurple(),
     "BulkTasks":       discord.Color.gold(),
+    "Messaging":       discord.Color.og_blurple(),
+    "Info":            discord.Color.dark_teal(),
     "SecurityAudit":   discord.Color.red(),
     "ServerAudit":     discord.Color.green(),
     "Stats":           discord.Color.blue(),
@@ -18,6 +20,8 @@ _DEFAULT_COLOR = discord.Color.blue()
 _COG_LABELS = {
     "Admin":           "⚙️  Admin Utilities",
     "BulkTasks":       "🔨  Bulk Operations",
+    "Messaging":       "📨  Messaging & Actions",
+    "Info":            "🔎  Info & Inspection",
     "SecurityAudit":   "🔒  Security Audit",
     "ServerAudit":     "📊  Server Audit",
     "Stats":           "📈  Stats & Analytics",
@@ -29,6 +33,8 @@ _COG_LABELS = {
 _COG_DESCRIPTIONS = {
     "Admin":           "Runtime config inspection and bot utilities.",
     "BulkTasks":       "Mass-manage messages, members, roles and channels.",
+    "Messaging":       "Send messages, embeds, DMs, react, pin, lock channels, timeout/kick/ban members, manage roles, invites, and voice.",
+    "Info":            "Inspect and list channels, roles, bans, invites, emojis, admins, avatars, and member counts.",
     "SecurityAudit":   "Scan for dangerous permissions, 2FA gaps, and bot overreach.",
     "ServerAudit":     "Detect dead channels, missing onboarding, and branding gaps.",
     "Stats":           "Server activity dashboards, user stats, voice tracking, leaderboards, user comparisons, server health pulse, and history scanning.",

@@ -69,6 +69,8 @@ logger = logging.getLogger(__name__)
 COGS = [
     "cogs.admin",
     "cogs.bulk_tasks",
+    "cogs.messaging",
+    "cogs.info",
     "cogs.security_audit",
     "cogs.server_audit",
     "cogs.natural_language",

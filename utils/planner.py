@@ -300,6 +300,162 @@ ACTIONS = [
         "parameters": {"duration_minutes": "Timeout duration in minutes (default 60)"},
         "is_destructive": True,
     },
+    # ── Messaging & communication ──────────────────────────────────────────────
+    {
+        "name": "send_message",
+        "description": "Send a plain text message to a channel as the bot",
+        "parameters": {"channel_name": "Channel name without #", "message": "The message text to send"},
+        "is_destructive": False,
+    },
+    {
+        "name": "send_embed",
+        "description": "Send a formatted embed (titled box) to a channel",
+        "parameters": {"channel_name": "Channel name without #", "title": "Embed title", "description": "Embed body text"},
+        "is_destructive": False,
+    },
+    {
+        "name": "announce",
+        "description": "Post a formatted announcement embed to a channel, optionally pinging @everyone",
+        "parameters": {
+            "channel_name": "Channel name without #",
+            "title": "Announcement title",
+            "body": "Announcement body text",
+            "ping_everyone": "true to ping @everyone, false otherwise",
+        },
+        "is_destructive": False,
+    },
+    {
+        "name": "send_dm",
+        "description": "Send a direct (private) message to a single member",
+        "parameters": {"member_name": "Username or display name", "message": "The message text to DM"},
+        "is_destructive": False,
+    },
+    {
+        "name": "bulk_dm",
+        "description": "Send the same direct message to every member who has a given role",
+        "parameters": {"role_name": "Exact role name", "message": "The message text to DM each member"},
+        "is_destructive": False,
+    },
+    {
+        "name": "add_reaction",
+        "description": "Add an emoji reaction to a message in a channel (the most recent message if no ID given)",
+        "parameters": {
+            "channel_name": "Channel name without #",
+            "emoji": "The emoji to react with",
+            "message_id": "Optional message ID; omit to react to the latest message",
+        },
+        "is_destructive": False,
+    },
+    {
+        "name": "pin_message",
+        "description": "Pin a message in a channel (the most recent message if no ID given)",
+        "parameters": {"channel_name": "Channel name without #", "message_id": "Optional message ID; omit to pin the latest message"},
+        "is_destructive": False,
+    },
+    {
+        "name": "unpin_message",
+        "description": "Unpin a message in a channel by its ID",
+        "parameters": {"channel_name": "Channel name without #", "message_id": "Message ID to unpin"},
+        "is_destructive": False,
+    },
+    # ── Voice moderation ───────────────────────────────────────────────────────
+    {
+        "name": "vc_mute",
+        "description": "Server-mute a member in their current voice channel",
+        "parameters": {"member_name": "Username or display name", "reason": "Optional reason"},
+        "is_destructive": False,
+    },
+    {
+        "name": "vc_unmute",
+        "description": "Remove a server-mute from a member in voice",
+        "parameters": {"member_name": "Username or display name"},
+        "is_destructive": False,
+    },
+    {
+        "name": "vc_deafen",
+        "description": "Server-deafen a member in their current voice channel",
+        "parameters": {"member_name": "Username or display name", "reason": "Optional reason"},
+        "is_destructive": False,
+    },
+    {
+        "name": "vc_undeafen",
+        "description": "Remove a server-deafen from a member in voice",
+        "parameters": {"member_name": "Username or display name"},
+        "is_destructive": False,
+    },
+    {
+        "name": "mute_all_voice",
+        "description": "Server-mute everyone currently in a voice channel — useful for events or raids",
+        "parameters": {"voice_channel_name": "Voice channel name"},
+        "is_destructive": False,
+    },
+    {
+        "name": "unmute_all_voice",
+        "description": "Remove server-mute from everyone in a voice channel",
+        "parameters": {"voice_channel_name": "Voice channel name"},
+        "is_destructive": False,
+    },
+    {
+        "name": "disconnect_all_voice",
+        "description": "Disconnect every member from a voice channel, clearing it out",
+        "parameters": {"voice_channel_name": "Voice channel name"},
+        "is_destructive": True,
+    },
+    # ── Moderation ─────────────────────────────────────────────────────────────
+    {
+        "name": "softban_member",
+        "description": "Ban then immediately unban a member to delete their recent messages without permanently removing them",
+        "parameters": {"member_name": "Username or display name", "reason": "Optional reason"},
+        "is_destructive": True,
+    },
+    # ── Invites ────────────────────────────────────────────────────────────────
+    {
+        "name": "create_invite",
+        "description": "Create an invite link for a channel",
+        "parameters": {
+            "channel_name": "Channel name without #",
+            "max_age_hours": "Hours until the invite expires (0 = never, default 24)",
+            "max_uses": "Maximum number of uses (0 = unlimited, default 0)",
+        },
+        "is_destructive": False,
+    },
+    {
+        "name": "list_invites",
+        "description": "List all active invite links with their creators and use counts",
+        "parameters": {},
+        "is_destructive": False,
+    },
+    # ── Info & inspection ──────────────────────────────────────────────────────
+    {
+        "name": "role_info",
+        "description": "Show details about a role: colour, member count, key permissions",
+        "parameters": {"role_name": "Exact role name"},
+        "is_destructive": False,
+    },
+    {
+        "name": "channel_info",
+        "description": "Show details about a channel: category, topic, slowmode, NSFW flag, creation date",
+        "parameters": {"channel_name": "Channel name without #"},
+        "is_destructive": False,
+    },
+    {
+        "name": "list_channels",
+        "description": "List all channels in the server grouped by category",
+        "parameters": {},
+        "is_destructive": False,
+    },
+    {
+        "name": "list_emojis",
+        "description": "List all custom emojis in the server",
+        "parameters": {},
+        "is_destructive": False,
+    },
+    {
+        "name": "list_admins",
+        "description": "List all members who have administrator-level permissions — a quick privilege review",
+        "parameters": {},
+        "is_destructive": False,
+    },
 ]
 
 

@@ -1056,6 +1056,270 @@ class NaturalLanguage(commands.Cog):
             logger.info("mass_timeout | targets=%d timed_out=%d minutes=%d | guild=%r", len(targets), count, minutes, guild.name)
             return f"⏱️ Timed out {count} roleless members for {minutes} minute(s)."
 
+        # ── Messaging & communication ──────────────────────────────────────────
+        if action == "send_message":
+            raw = params.get("channel_name", "")
+            message = params.get("message", "")
+            channel = resolve_text_channel(guild, raw)
+            if not channel:
+                return _channel_not_found(guild, raw)
+            if not message:
+                return "No message text provided."
+            await channel.send(message)
+            logger.info("send_message | channel=#%s | guild=%r", channel.name, guild.name)
+            return f"Sent message to `#{channel.name}`."
+
+        if action == "send_embed":
+            raw = params.get("channel_name", "")
+            title = params.get("title", "")
+            description = params.get("description", "")
+            channel = resolve_text_channel(guild, raw)
+            if not channel:
+                return _channel_not_found(guild, raw)
+            await channel.send(embed=discord.Embed(title=title, description=description, color=discord.Color.blurple()))
+            logger.info("send_embed | channel=#%s title=%r | guild=%r", channel.name, title, guild.name)
+            return f"Sent embed **{title}** to `#{channel.name}`."
+
+        if action == "announce":
+            raw = params.get("channel_name", "")
+            title = params.get("title", "")
+            body = params.get("body", "")
+            ping = str(params.get("ping_everyone", "false")).lower() == "true"
+            channel = resolve_text_channel(guild, raw)
+            if not channel:
+                return _channel_not_found(guild, raw)
+            embed = discord.Embed(title=f"📢  {title}", description=body, color=discord.Color.gold(), timestamp=discord.utils.utcnow())
+            embed.set_footer(text=f"Announced by {ctx.author.display_name}")
+            await channel.send(content="@everyone" if ping else None, embed=embed)
+            logger.info("announce | channel=#%s ping=%s title=%r | guild=%r", channel.name, ping, title, guild.name)
+            return f"Posted announcement **{title}** to `#{channel.name}`{' with an @everyone ping' if ping else ''}."
+
+        if action == "send_dm":
+            raw = params.get("member_name", "")
+            message = params.get("message", "")
+            member = resolve_member(guild, raw)
+            if not member:
+                return _member_not_found(guild, raw)
+            try:
+                await member.send(message)
+            except discord.Forbidden:
+                return f"Could not DM **{member.display_name}** — they have DMs disabled."
+            logger.info("send_dm | target=%s (ID=%s) | guild=%r", member, member.id, guild.name)
+            return f"Sent a DM to **{member.display_name}**."
+
+        if action == "bulk_dm":
+            raw = params.get("role_name", "")
+            message = params.get("message", "")
+            role = resolve_role(guild, raw)
+            if not role:
+                return _role_not_found(guild, raw)
+            targets = [m for m in role.members if not m.bot]
+            sent = failed = 0
+            for member in targets:
+                try:
+                    await member.send(message)
+                    sent += 1
+                except discord.Forbidden:
+                    failed += 1
+                await asyncio.sleep(_BULK_DELAY)
+            logger.info("bulk_dm | role=%r sent=%d failed=%d | guild=%r", role.name, sent, failed, guild.name)
+            return f"DMed {sent} member(s) with `{role.name}` ({failed} had DMs closed)."
+
+        if action == "add_reaction":
+            raw = params.get("channel_name", "")
+            emoji = params.get("emoji", "")
+            message_id = params.get("message_id")
+            channel = resolve_text_channel(guild, raw)
+            if not channel:
+                return _channel_not_found(guild, raw)
+            try:
+                if message_id and str(message_id).isdigit():
+                    msg = await channel.fetch_message(int(message_id))
+                else:
+                    msgs = [m async for m in channel.history(limit=1)]
+                    if not msgs:
+                        return f"`#{channel.name}` has no messages to react to."
+                    msg = msgs[0]
+                await msg.add_reaction(emoji)
+            except discord.NotFound:
+                return "Message not found."
+            logger.info("add_reaction | channel=#%s emoji=%s | guild=%r", channel.name, emoji, guild.name)
+            return f"Reacted with {emoji} in `#{channel.name}`."
+
+        if action == "pin_message":
+            raw = params.get("channel_name", "")
+            message_id = params.get("message_id")
+            channel = resolve_text_channel(guild, raw)
+            if not channel:
+                return _channel_not_found(guild, raw)
+            try:
+                if message_id and str(message_id).isdigit():
+                    msg = await channel.fetch_message(int(message_id))
+                else:
+                    msgs = [m async for m in channel.history(limit=1)]
+                    if not msgs:
+                        return f"`#{channel.name}` has no messages to pin."
+                    msg = msgs[0]
+                await msg.pin()
+            except discord.NotFound:
+                return "Message not found."
+            logger.info("pin_message | channel=#%s | guild=%r", channel.name, guild.name)
+            return f"Pinned a message in `#{channel.name}`."
+
+        if action == "unpin_message":
+            raw = params.get("channel_name", "")
+            message_id = params.get("message_id")
+            channel = resolve_text_channel(guild, raw)
+            if not channel:
+                return _channel_not_found(guild, raw)
+            if not (message_id and str(message_id).isdigit()):
+                return "A message ID is required to unpin a specific message."
+            try:
+                msg = await channel.fetch_message(int(message_id))
+                await msg.unpin()
+            except discord.NotFound:
+                return "Message not found."
+            logger.info("unpin_message | channel=#%s | guild=%r", channel.name, guild.name)
+            return f"Unpinned a message in `#{channel.name}`."
+
+        # ── Voice moderation ───────────────────────────────────────────────────
+        if action in ("vc_mute", "vc_unmute", "vc_deafen", "vc_undeafen"):
+            raw = params.get("member_name", "")
+            reason = params.get("reason") or f"{action} by {ctx.author}"
+            member = resolve_member(guild, raw)
+            if not member:
+                return _member_not_found(guild, raw)
+            if not member.voice:
+                return f"**{member.display_name}** is not in a voice channel."
+            kwargs = {
+                "vc_mute": {"mute": True},
+                "vc_unmute": {"mute": False},
+                "vc_deafen": {"deafen": True},
+                "vc_undeafen": {"deafen": False},
+            }[action]
+            await member.edit(reason=reason, **kwargs)
+            verb = {"vc_mute": "server-muted", "vc_unmute": "unmuted", "vc_deafen": "server-deafened", "vc_undeafen": "undeafened"}[action]
+            logger.info("%s | target=%s | guild=%r", action, member, guild.name)
+            return f"**{member.display_name}** has been {verb}."
+
+        if action in ("mute_all_voice", "unmute_all_voice", "disconnect_all_voice"):
+            raw = params.get("voice_channel_name", "")
+            vc = resolve_voice_channel(guild, raw)
+            if not vc:
+                sample = ", ".join(v.name for v in guild.voice_channels[:8])
+                return f"Voice channel `{raw}` not found. Available: {sample}"
+            members = list(vc.members)
+            if not members:
+                return f"**{vc.name}** is empty."
+            count = 0
+            for m in members:
+                try:
+                    if action == "mute_all_voice":
+                        await _api(lambda mem=m: mem.edit(mute=True))
+                    elif action == "unmute_all_voice":
+                        await _api(lambda mem=m: mem.edit(mute=False))
+                    else:
+                        await _api(lambda mem=m: mem.move_to(None))
+                    count += 1
+                    await asyncio.sleep(_BULK_DELAY)
+                except discord.Forbidden:
+                    pass
+            verb = {"mute_all_voice": "muted", "unmute_all_voice": "unmuted", "disconnect_all_voice": "disconnected"}[action]
+            logger.info("%s | vc=%r affected=%d | guild=%r", action, vc.name, count, guild.name)
+            return f"{verb.capitalize()} {count} member(s) in **{vc.name}**."
+
+        # ── Moderation ─────────────────────────────────────────────────────────
+        if action == "softban_member":
+            raw = params.get("member_name", "")
+            reason = params.get("reason") or f"Softban by {ctx.author}"
+            member = resolve_member(guild, raw)
+            if not member:
+                return _member_not_found(guild, raw)
+            await member.ban(reason=reason, delete_message_seconds=86400)
+            await guild.unban(member, reason="Softban — immediate unban")
+            logger.info("softban_member | %s (ID=%s) | guild=%r", member, member.id, guild.name)
+            return f"Softbanned **{member.display_name}** — recent messages purged; they may rejoin."
+
+        # ── Invites ────────────────────────────────────────────────────────────
+        if action == "create_invite":
+            raw = params.get("channel_name", "")
+            max_age = max(0, int(params.get("max_age_hours", 24))) * 3600
+            max_uses = max(0, int(params.get("max_uses", 0)))
+            channel = resolve_text_channel(guild, raw)
+            if not channel:
+                return _channel_not_found(guild, raw)
+            invite = await channel.create_invite(max_age=max_age, max_uses=max_uses, reason=f"Created by {ctx.author}")
+            age_txt = "never expires" if max_age == 0 else f"expires in {max_age // 3600}h"
+            uses_txt = "unlimited uses" if max_uses == 0 else f"{max_uses} use(s)"
+            logger.info("create_invite | channel=#%s | guild=%r", channel.name, guild.name)
+            return f"Created invite for `#{channel.name}`: {invite.url} ({age_txt}, {uses_txt})."
+
+        if action == "list_invites":
+            invites = await guild.invites()
+            if not invites:
+                return "No active invites."
+            lines = [f"{inv.url} — by {inv.inviter}, {inv.uses} use(s)" for inv in invites[:20]]
+            overflow = f"\n…and {len(invites) - 20} more" if len(invites) > 20 else ""
+            return f"**{len(invites)} active invite(s):**\n" + "\n".join(lines) + overflow
+
+        # ── Info & inspection ──────────────────────────────────────────────────
+        if action == "role_info":
+            raw = params.get("role_name", "")
+            role = resolve_role(guild, raw)
+            if not role:
+                return _role_not_found(guild, raw)
+            key_perms = [name.replace("_", " ").title() for name, value in role.permissions if value][:15]
+            return (
+                f"**{role.name}**\n"
+                f"ID: {role.id}\n"
+                f"Members: {len(role.members)}\n"
+                f"Colour: {role.color}\n"
+                f"Mentionable: {role.mentionable} | Hoisted: {role.hoist} | Position: {role.position}\n"
+                f"Permissions: {', '.join(key_perms) if key_perms else 'None'}"
+            )
+
+        if action == "channel_info":
+            raw = params.get("channel_name", "")
+            channel = resolve_any_channel(guild, raw)
+            if not channel:
+                return _channel_not_found(guild, raw)
+            age = (datetime.datetime.now(datetime.timezone.utc) - channel.created_at).days
+            lines = [
+                f"**#{channel.name}**",
+                f"ID: {channel.id}",
+                f"Type: {channel.type}",
+                f"Category: {channel.category.name if channel.category else 'None'}",
+                f"Created: {age}d ago",
+            ]
+            if isinstance(channel, discord.TextChannel):
+                lines.append(f"Topic: {channel.topic or 'None'}")
+                lines.append(f"Slowmode: {channel.slowmode_delay}s")
+                lines.append(f"NSFW: {channel.is_nsfw()}")
+            return "\n".join(lines)
+
+        if action == "list_channels":
+            lines = []
+            for category, channels in guild.by_category():
+                cat_name = category.name if category else "No Category"
+                ch_names = ", ".join(("🔊" if isinstance(c, discord.VoiceChannel) else "#") + c.name for c in channels)
+                lines.append(f"**{cat_name}**: {ch_names}")
+            text = "\n".join(lines)
+            return text[:1900] + ("…" if len(text) > 1900 else "")
+
+        if action == "list_emojis":
+            if not guild.emojis:
+                return "This server has no custom emojis."
+            names = " ".join(str(e) for e in guild.emojis[:50])
+            return f"**{len(guild.emojis)} custom emoji(s):**\n{names}"
+
+        if action == "list_admins":
+            admins = [m for m in guild.members if m.guild_permissions.administrator and not m.bot]
+            if not admins:
+                return "No members have administrator permissions."
+            names = ", ".join(m.display_name for m in admins[:25])
+            overflow = f" (+{len(admins) - 25} more)" if len(admins) > 25 else ""
+            return f"**{len(admins)} member(s) with Administrator:** {names}{overflow}"
+
         logger.error("No executor implemented for action %r", action)
         return f"Executor for `{action}` is not implemented."
 
