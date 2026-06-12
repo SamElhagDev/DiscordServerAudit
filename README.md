@@ -1,14 +1,16 @@
 # Discord Admin Bot
 
-A Discord bot for bulk automation, security audits, server health recommendations, activity analytics, natural language server management, and AI-powered fact-checking.
+A Discord bot for bulk automation, messaging and moderation, security audits, server health recommendations, activity analytics, natural language server management, and AI-powered fact-checking.
 
 ## Features
 
 - **Bulk Tasks** — Message purging, member pruning, bulk role assign/remove, bulk channel create/delete
+- **Messaging & Moderation** — Send messages, embeds, announcements, DMs and bulk DMs; react, pin, and edit; lock channels and set slowmode; kick, ban, softban, and timeout members; manage roles and nicknames; create invites; create custom emojis from avatars; and full voice moderation (mute/deafen/disconnect, individually or in bulk)
+- **Info & Inspection** — Inspect and list channels, roles, bans, invites, emojis, and admins; view avatars and member counts
 - **Security Audits** — Checks permissions, @everyone overrides, dangerous bot permissions, channel overwrites, 2FA enforcement
 - **Server Audits** — Dead channel detection, missing onboarding channels, role hierarchy issues, branding gaps, channel organization
 - **Stats & Analytics** — Server activity dashboards, per-user and per-channel stats, voice tracking, member growth trends, peak hour analysis, server health pulse, multi-category leaderboards, user-vs-user comparisons, history backfill scanning
-- **Natural Language** — Describe admin tasks in plain English (via `!ask`), review an AI-generated execution plan, then confirm to run it. Supports 30+ actions including moderation, channel/role management, and server queries
+- **Natural Language** — Describe admin tasks in plain English (via `!ask`), review an AI-generated execution plan, then confirm to run it. Supports 70+ actions spanning messaging, moderation, channel/role management, voice control, info queries, and emoji creation
 - **Fact-Check** — React to any message with a configurable emoji to get an AI-powered fact-check with per-claim breakdowns, verdicts, and detailed analysis
 - **AI-Powered** — Gemini integration provides AI action plans for audit findings, server trend insights, and natural language command planning
 - **Scheduled** — Security audits, server audits, and stats snapshots run automatically on configurable intervals
@@ -77,6 +79,10 @@ Generate an invite URL in the Discord Developer Portal with these permissions:
 - Send Messages
 - View Channels
 - Moderate Members (for timeouts)
+- Move Members (for voice moves and disconnects)
+- Mute Members / Deafen Members (for voice moderation)
+- Create Instant Invite (for `!createinvite` and `!ask` invite creation)
+- Manage Expressions (for creating custom emojis from avatars)
 
 ### 5. Create the admin role
 In your Discord server, create a role named exactly as set in `admin_role` in config.yaml and assign it to yourself and any other admins.
@@ -108,6 +114,88 @@ python bot.py
 | `!bulkcreatechannels "Category" name1 name2` | Create multiple channels in a category |
 | `!bulkdeletechannels "Category"` | Delete all channels in a category |
 | `!tasklogs` | Show recent bulk task history |
+
+### Messaging & Actions
+
+**Send & manage messages**
+
+| Command | Description |
+|---|---|
+| `!say #channel <message>` | Send a plain message as the bot |
+| `!sayembed #channel "Title" <description>` | Send a custom embed |
+| `!announce #channel true "Title" <body>` | Formatted announcement, optionally pinging @everyone |
+| `!timed #channel 30 <message>` | Send a message that auto-deletes after N seconds |
+| `!dm @User <message>` | Send a direct message to a member |
+| `!bulkdm @Role <message>` | DM every member with a role (confirms first) |
+| `!react #channel <messageID> 👍` | Add a reaction to a message |
+| `!clearreactions #channel <messageID>` | Remove all reactions from a message |
+| `!pin #channel <messageID>` / `!unpin ...` | Pin / unpin a message |
+| `!editmsg #channel <messageID> <text>` | Edit a message the bot sent |
+
+**Moderation**
+
+| Command | Description |
+|---|---|
+| `!kick @User [reason]` | Kick a member (they can rejoin) |
+| `!ban @User [reason]` | Ban a member (confirms first) |
+| `!unban <userID> [reason]` | Lift a ban |
+| `!softban @User [reason]` | Ban + unban to purge a member's recent messages |
+| `!timeout @User 30 [reason]` | Timeout (mute) a member for N minutes |
+| `!untimeout @User` | Remove a member's timeout |
+| `!nick @User <nickname>` / `!clearnick @User` | Set / reset a member's nickname |
+
+**Channels**
+
+| Command | Description |
+|---|---|
+| `!lock #channel [reason]` / `!unlock #channel` | Lock / unlock a channel for @everyone |
+| `!slowmode #channel 10` | Set slowmode in seconds (0 disables) |
+| `!rename #channel <new-name>` | Rename a channel |
+| `!topic #channel <text>` | Set a channel's topic |
+| `!nsfw #channel` | Toggle a channel's NSFW flag |
+| `!movechannel #channel "Category"` | Move a channel to a category |
+
+**Roles**
+
+| Command | Description |
+|---|---|
+| `!addrole @User @Role` / `!removerole @User @Role` | Add / remove a role on a member |
+| `!createrole "Name" [#hex]` | Create a role with an optional colour |
+| `!deleterole @Role` | Delete a role |
+
+**Voice**
+
+| Command | Description |
+|---|---|
+| `!movemember @User "VC"` | Move a member to a voice channel |
+| `!vcmute @User` / `!vcunmute @User` | Server-mute / unmute a member |
+| `!vcdeafen @User` / `!vcundeafen @User` | Server-deafen / undeafen a member |
+| `!vcdisconnect @User` | Disconnect a member from voice |
+| `!vcmuteall "VC"` / `!vcunmuteall "VC"` | Mute / unmute everyone in a voice channel |
+| `!vckickall "VC"` | Disconnect everyone from a voice channel (confirms) |
+
+**Invites**
+
+| Command | Description |
+|---|---|
+| `!createinvite #channel [hours] [uses]` | Create an invite link (0 hours = never, 0 uses = unlimited) |
+
+### Info & Inspection
+
+| Command | Description |
+|---|---|
+| `!serverinfo` | Server summary: members, channels, roles, boosts |
+| `!userinfo @User` | Member details: roles, join date, timeout status |
+| `!roleinfo @Role` | Role colour, member count, permissions |
+| `!channelinfo #channel` | Channel category, topic, slowmode, NSFW, age |
+| `!listchannels` | All channels grouped by category |
+| `!listroles` | All roles with member counts |
+| `!listbans` | Currently banned members |
+| `!listinvites` | Active invite links with creators and use counts |
+| `!listemojis` | Custom server emojis |
+| `!listadmins` | Members with Administrator permission |
+| `!avatar @User` | Show a member's avatar at full size |
+| `!membercount` | Total / human / bot / in-voice counts |
 
 ### Security Audit
 
@@ -149,7 +237,7 @@ Stats commands are hybrid (work as both `!command` and `/command`).
 |---|---|
 | `!ask <query>` | Describe an admin task in plain English; review the AI plan, then confirm to execute |
 
-The `!ask` command supports 30+ actions including: bulk message delete, prune members, role management (add/remove/create/delete/rename/list), channel management (create/delete/rename/move/lock/unlock/topic/NSFW/slowmode), member moderation (kick/ban/unban/timeout/move voice/disconnect), server queries (server info, member info, find inactive channels, find roleless members, find new members, list bans), and running audits.
+The `!ask` command supports 70+ actions including: messaging (send messages, embeds, announcements, DMs, bulk DMs, reactions, pins), bulk message delete, prune members, role management (add/remove/create/delete/rename/list), channel management (create/delete/rename/move/lock/unlock/topic/NSFW/slowmode), member moderation (kick/ban/unban/softban/timeout), voice control (mute/deafen/disconnect individually or in bulk), invite management (create/list), creating custom emojis from a member's avatar, server queries (server/role/channel info, member info, find inactive channels, find roleless/new members, list bans/channels/emojis/admins), and running audits.
 
 ### Fact-Check
 

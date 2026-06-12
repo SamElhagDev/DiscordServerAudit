@@ -963,9 +963,12 @@ def get_user_streaks(guild_id: int, user_id: int, days: int) -> dict:
         else:
             streak = 0
         d += datetime.timedelta(days=1)
-    # Current streak: count back from today
+    # Current streak: count back from today, or from yesterday if today has no
+    # activity yet — the day isn't over, and today's rollup may not have run.
     current_streak = 0
     d = today
+    if d.strftime("%Y-%m-%d") not in active_dates:
+        d -= datetime.timedelta(days=1)
     while d.strftime("%Y-%m-%d") in active_dates:
         current_streak += 1
         d -= datetime.timedelta(days=1)
@@ -979,13 +982,24 @@ def get_user_consistency(guild_id: int, user_id: int, days: int) -> dict:
     cutoff = _cutoff_date(days)
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT message_count FROM user_activity_daily "
-            "WHERE guild_id = ? AND user_id = ? AND date >= ?",
+            "SELECT date, message_count FROM user_activity_daily "
+            "WHERE guild_id = ? AND user_id = ? AND date >= ? ORDER BY date",
             (guild_id, user_id, cutoff),
         ).fetchall()
-    counts = [r["message_count"] for r in rows]
-    if not counts:
+    if not rows:
         return {"mean": 0, "std_dev": 0, "score": 0}
+    # Inactive days have no row in user_activity_daily. Zero-fill every calendar
+    # day from the user's first active day through today so gaps count against
+    # consistency — otherwise the score only measures evenness across active days
+    # and inflates to ~100 for sporadic users.
+    by_date = {r["date"]: r["message_count"] for r in rows}
+    start = datetime.datetime.strptime(rows[0]["date"], "%Y-%m-%d").date()
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    counts = []
+    d = start
+    while d <= today:
+        counts.append(by_date.get(d.strftime("%Y-%m-%d"), 0))
+        d += datetime.timedelta(days=1)
     mean = sum(counts) / len(counts)
     if mean == 0:
         return {"mean": 0, "std_dev": 0, "score": 0}
