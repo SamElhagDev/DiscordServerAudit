@@ -9,6 +9,9 @@ logger = logging.getLogger(__name__)
 DB_PATH = os.environ.get("DiscordServerAudit_DB_PATH", "bot.db")
 _conn: sqlite3.Connection | None = None
 
+# Bump when adding a new one-time data migration in _run_migrations().
+_SCHEMA_VERSION = 1
+
 
 def _ensure_conn() -> sqlite3.Connection:
     global _conn
@@ -165,8 +168,7 @@ def init_db():
                     ON channel_activity_daily(guild_id, channel_id, date);
             """)
         logger.info("Database schema ready")
-        _migrate_add_total_words()
-        _migrate_timestamps()
+        _run_migrations()
         logger.info("Database initialised successfully")
     except Exception:
         logger.critical("Failed to initialise database at %s", DB_PATH, exc_info=True)
@@ -234,6 +236,26 @@ def _migrate_timestamps():
         logger.info("Timestamp migration complete: %d rows updated", total_fixed)
     else:
         logger.debug("Timestamp migration: nothing to update")
+
+
+def _run_migrations():
+    """Run one-time data migrations, gated by PRAGMA user_version.
+
+    Without this gate the migrations re-scan every (growing) table on every
+    startup. They are idempotent, so an already-migrated database just bumps its
+    version once and skips them on subsequent boots.
+    """
+    with get_conn() as conn:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= _SCHEMA_VERSION:
+        logger.debug("Schema migrations up to date (user_version=%d) — skipping", version)
+        return
+    logger.info("Running schema migrations (user_version %d -> %d)", version, _SCHEMA_VERSION)
+    _migrate_add_total_words()
+    _migrate_timestamps()
+    with get_conn() as conn:
+        conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+    logger.info("Schema migrations complete (user_version=%d)", _SCHEMA_VERSION)
 
 
 @contextmanager

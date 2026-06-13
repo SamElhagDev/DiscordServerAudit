@@ -86,6 +86,10 @@ class AdminBot(commands.Bot):
         intents.members = True
         intents.message_content = True
         intents.voice_states = True
+        # Presence is a privileged intent and must also be enabled in the Discord
+        # Developer Portal. Off by default so the bot still starts without it;
+        # online-member metrics show N/A until it's turned on.
+        intents.presences = config.get("stats.track_presence", False)
 
         super().__init__(
             command_prefix=cfg.get("bot", {}).get("prefix", "!"),
@@ -116,10 +120,11 @@ class AdminBot(commands.Bot):
             interaction.guild_id or "DM",
             error, exc_info=error,
         )
+        msg = "❌ Something went wrong running that command. The error has been logged."
         if interaction.response.is_done():
-            await interaction.followup.send(f"An error occurred: {error}", ephemeral=True)
+            await interaction.followup.send(msg, ephemeral=True)
         else:
-            await interaction.response.send_message(f"An error occurred: {error}", ephemeral=True)
+            await interaction.response.send_message(msg, ephemeral=True)
 
     async def on_ready(self):
         elapsed = time.monotonic() - self._start_time
@@ -258,7 +263,7 @@ class AdminBot(commands.Bot):
                 ctx.guild.id if ctx.guild else "DM",
                 error, exc_info=error,
             )
-            await ctx.send(f"❌ An unexpected error occurred: {error}")
+            await ctx.send("❌ An unexpected error occurred. The details have been logged.")
 
     async def close(self):
         logger.info("Bot shutting down — closing orphaned voice sessions")

@@ -29,6 +29,7 @@ pip install -r requirements.txt
 - Go to https://discord.com/developers/applications
 - Create a New Application → Bot
 - Enable **Server Members Intent**, **Message Content Intent**, and **Voice State Intent** under Bot > Privileged Gateway Intents
+- *(Optional)* Enable **Presence Intent** as well if you want online-member metrics (`/growth` online ratio, `/serverpulse` online count). It also requires `stats.track_presence: true` in config; while off, those metrics show **N/A** instead of a misleading 0.
 - Copy your bot token
 
 ### 3. Configure
@@ -52,8 +53,9 @@ intervals:
 stats:
   enabled: true
   snapshot_interval_hours: 1
-  retention_days: 30
+  retention_days: 90             # Raw events kept this long; daily rollups keep aggregates longer
   exclude_bots: true
+  track_presence: false          # true + Presence Intent enables online-member metrics
   # excluded_channels: []
   # excluded_users: []
 

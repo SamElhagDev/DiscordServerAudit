@@ -168,65 +168,6 @@ def _gini_coefficient(values: list[int]) -> float:
     return cumulative / (n * sum(sorted_vals)) if sum(sorted_vals) else 0.0
 
 
-def _compute_streak(daily_rows: list[dict]) -> tuple[int, int]:
-    """Compute (current_streak, longest_streak) from daily activity rows.
-
-    Each row must have a 'date' key (YYYY-MM-DD string) and a 'message_count' key.
-    Returns (0, 0) if no active days found.
-    """
-    if not daily_rows:
-        return 0, 0
-    active_dates = sorted(
-        {r["date"] for r in daily_rows if r.get("message_count", 0) > 0}
-    )
-    if not active_dates:
-        return 0, 0
-
-    longest = 1
-    current = 1
-    for i in range(1, len(active_dates)):
-        prev = datetime.date.fromisoformat(active_dates[i - 1])
-        curr = datetime.date.fromisoformat(active_dates[i])
-        if (curr - prev).days == 1:
-            current += 1
-            longest = max(longest, current)
-        else:
-            current = 1
-
-    # current_streak = streak length that includes today (or yesterday)
-    last_active = datetime.date.fromisoformat(active_dates[-1])
-    today_dt = datetime.date.today()
-    if (today_dt - last_active).days > 1:
-        current_streak = 0  # streak broken
-    else:
-        # Walk backwards from end to count the current run
-        current_streak = 1
-        for i in range(len(active_dates) - 1, 0, -1):
-            prev = datetime.date.fromisoformat(active_dates[i - 1])
-            curr = datetime.date.fromisoformat(active_dates[i])
-            if (curr - prev).days == 1:
-                current_streak += 1
-            else:
-                break
-
-    return current_streak, max(longest, current_streak)
-
-
-def _consistency_score(daily_counts: list[int]) -> float:
-    """Score 0-100 where 100 = perfectly even daily activity (zero variance).
-
-    Formula: 100 × (1 - std_dev/mean) clamped to [0, 100].
-    """
-    if not daily_counts or len(daily_counts) < 2:
-        return 0.0
-    mean = sum(daily_counts) / len(daily_counts)
-    if mean == 0:
-        return 0.0
-    variance = sum((x - mean) ** 2 for x in daily_counts) / len(daily_counts)
-    std_dev = variance ** 0.5
-    return max(0.0, min(100.0, 100.0 * (1 - std_dev / mean)))
-
-
 def _composite_health_score(metrics: dict) -> int:
     """Compute server health score 0-100 from five 0-20 components.
 
@@ -300,6 +241,17 @@ def _build_heatmap_bar(hours_data: list, width: int = 24, offset: int = 0) -> st
     if mx == 0:
         return "░" * width
     return "".join(blocks[min(int(counts[(h - offset) % 24] / mx * 8), 8)] for h in range(width))
+
+
+def _online_count(guild, bot) -> int | None:
+    """Number of non-offline members, or None if the presences intent is disabled.
+
+    Without that privileged intent every member reports as offline, so a raw count
+    would be a misleading 0. Callers should show "N/A" when this returns None.
+    """
+    if not bot.intents.presences:
+        return None
+    return sum(1 for m in guild.members if m.status != discord.Status.offline)
 
 
 # ---------------------------------------------------------------------------
@@ -1212,12 +1164,13 @@ class Stats(commands.Cog):
             and (m.joined_at - m.created_at).days < 7
         )
 
-        # Online ratio
-        online_count = sum(
-            1 for m in ctx.guild.members
-            if m.status != discord.Status.offline
-        )
-        online_ratio = (online_count / current * 100) if current else 0
+        # Online ratio (requires the presences intent — N/A when disabled)
+        online_count = _online_count(ctx.guild, self.bot)
+        if online_count is None:
+            online_ratio_text = "N/A (presence tracking off)"
+        else:
+            online_ratio = (online_count / current * 100) if current else 0
+            online_ratio_text = f"{online_ratio:.0f}% of members online"
 
         # Joins by day-of-week bars
         dow_max = max((d["count"] for d in join_dow), default=1) or 1
@@ -1230,7 +1183,7 @@ class Stats(commands.Cog):
         e5 = discord.Embed(title="\U0001f4ca Member Lifecycle", color=COLOR_NEUTRAL)
         e5.add_field(name="\U0001f4c5 Busiest Join Day", value=busiest_join_name, inline=True)
         e5.add_field(name="\U0001f476 New Accounts (<7d)", value=f"{new_accounts} members", inline=True)
-        e5.add_field(name="\U0001f4ca Online Ratio (avg)", value=f"{online_ratio:.0f}% of members online", inline=True)
+        e5.add_field(name="\U0001f4ca Online Ratio (avg)", value=online_ratio_text, inline=True)
         e5.add_field(
             name="Joins by Day of Week",
             value="```\n" + "\n".join(dow_lines) + "\n```",
@@ -1372,9 +1325,10 @@ class Stats(commands.Cog):
             top_ch_name = "N/A"
             top_ch_msgs = 0
 
-        # Online members
-        online = sum(1 for m in guild.members if m.status != discord.Status.offline)
+        # Online members (requires the presences intent — N/A when disabled)
+        online = _online_count(guild, self.bot)
         total_members = guild.member_count or 1
+        online_text = f"{online} / {total_members} members" if online is not None else "N/A (presence tracking off)"
 
         # Engagement metrics
         reaction_per_msg = (summary_7d["reactions"] / summary_7d["messages"]) if summary_7d["messages"] else 0
@@ -1414,7 +1368,7 @@ class Stats(commands.Cog):
         right_now = (
             f"\U0001f4cc Top Channel: {top_ch_name} ({top_ch_msgs} msgs today)\n"
             f"\U0001f3a4 In Voice: {voice_now} members\n"
-            f"\U0001f7e2 Online: {online} / {total_members} members"
+            f"\U0001f7e2 Online: {online_text}"
         )
         embed.add_field(name="\U0001f525 Right Now", value=right_now, inline=False)
 
