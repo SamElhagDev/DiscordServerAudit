@@ -1,8 +1,12 @@
+import logging
+
 import discord
 from discord.ext import commands
 
 import config
 from utils.permissions import has_admin_role, build_embed
+
+logger = logging.getLogger(__name__)
 
 
 class Admin(commands.Cog):
@@ -38,6 +42,26 @@ class Admin(commands.Cog):
             "\n".join(lines),
             discord.Color.blue()
         ))
+
+    @commands.command(name="shutdown")
+    @has_admin_role()
+    async def shutdown(self, ctx: commands.Context):
+        """
+        Gracefully shut down the bot. Open voice sessions are finalised and the
+        database is closed before the process exits.
+        """
+        logger.info(
+            "Shutdown requested by %s (ID=%s) in guild %s",
+            ctx.author, ctx.author.id, ctx.guild.id if ctx.guild else "DM",
+        )
+        await ctx.send(embed=build_embed(
+            "🛑 Shutting Down",
+            "Finalising open voice sessions and closing the database, then stopping the bot…",
+            discord.Color.red(),
+        ))
+        # close() runs the save path (close_orphaned_voice_sessions + close_db),
+        # disconnects from Discord, and lets the process exit cleanly.
+        await self.bot.close()
 
 
 async def setup(bot):

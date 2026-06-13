@@ -103,6 +103,7 @@ python bot.py
 | Command | Description |
 |---|---|
 | `!config` | Show the current effective runtime configuration |
+| `!shutdown` | Gracefully stop the bot (finalises open voice sessions and closes the database first) |
 | `!help` | Rich embed-based help with per-category and per-command detail |
 
 ### Bulk Operations
@@ -218,13 +219,13 @@ python bot.py
 | Command | Description |
 |---|---|
 | `/stats [days]` | Server activity dashboard with health metrics, DAU/MAU, channel diversity |
-| `/userstats @User [days]` | Activity profile with streaks, consistency score, hourly heatmap |
+| `/userstats @User [days]` | Activity profile with active hours, dormancy, weekday/weekend split, hourly heatmap |
 | `/channelstats #channel [days]` | Channel report with user concentration, word stats, growth trends |
 | `/voicestats [days]` | Voice dashboard with session distribution, day-of-week analysis |
 | `/growth [days]` | Member growth with churn rate, ban rate, member lifecycle |
 | `/peakhours [days]` | Hourly distribution with per-channel breakdown, weekday vs weekend |
 | `/serverpulse` | Quick server health check with composite score (admin only) |
-| `/leaderboard [days] [category]` | Top 10 users by messages, voice, streaks, engagement, or social |
+| `/leaderboard [days] [category]` | Top 10 users by messages, voice, engagement, or social |
 | `/activity @User1 @User2 [days]` | Head-to-head user comparison with overlay chart |
 | `/insights [days]` | AI-powered server trend analysis (requires Gemini) |
 | `/scan [days]` | Backfill the stats database with server message history |

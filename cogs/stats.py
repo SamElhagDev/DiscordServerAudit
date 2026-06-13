@@ -699,7 +699,6 @@ class Stats(commands.Cog):
         u_streaks = database.get_user_streaks(ctx.guild.id, member.id, days)
         u_rank = database.get_user_rank(ctx.guild.id, member.id, days)
         u_hours = database.get_user_active_hours(ctx.guild.id, member.id, days)
-        u_consistency = database.get_user_consistency(ctx.guild.id, member.id, days)
         u_wk = database.get_user_weekday_split(ctx.guild.id, member.id, days)
         u_dormancy = database.get_user_dormancy(ctx.guild.id, member.id)
         u_engagement = database.get_user_engagement_ratios(ctx.guild.id, member.id, days)
@@ -721,8 +720,6 @@ class Stats(commands.Cog):
         e1.add_field(name="⏱️ Avg Voice Session", value=_format_duration(avg_session), inline=True)
         e1.add_field(name="\U0001f4dd Avg Msg Length", value=f"{u_words['avg_words']:.1f} words", inline=True)
         e1.add_field(name="\U0001f3c6 Server Rank", value=f"#{u_rank['msg_rank']} of {u_rank['total_users']}", inline=True)
-        e1.add_field(name="\U0001f525 Current Streak", value=f"{u_streaks['current']} days", inline=True)
-        e1.add_field(name="\U0001f4ca Longest Streak", value=f"{u_streaks['longest']} days", inline=True)
         e1.set_footer(text=data_range_note)
 
         # Embed 2: Sparkline + chart — use zero-filled series so gaps show as 0 bars
@@ -763,19 +760,6 @@ class Stats(commands.Cog):
 
         u_wk_pct = _weekday_weekend_label(u_wk["weekday"], u_wk["weekend"])
 
-        # Consistency label
-        c_score = u_consistency["score"]
-        if c_score >= 80:
-            c_label = "very consistent"
-        elif c_score >= 60:
-            c_label = "steady contributor"
-        elif c_score >= 40:
-            c_label = "moderate"
-        elif c_score >= 20:
-            c_label = "sporadic"
-        else:
-            c_label = "irregular"
-
         # Dormancy
         dorm_days = u_dormancy["days_since_last"]
         dorm_text = "active today" if dorm_days == 0 else f"{dorm_days} day{'s' if dorm_days != 1 else ''}"
@@ -786,7 +770,6 @@ class Stats(commands.Cog):
         e4 = discord.Embed(title="\U0001f4ca Activity Profile", color=COLOR_NEUTRAL)
         e4.add_field(name="⏰ Most Active Hour", value=peak_hour_str, inline=True)
         e4.add_field(name="\U0001f4c5 Weekday / Weekend", value=u_wk_pct, inline=True)
-        e4.add_field(name="\U0001f3af Consistency Score", value=f"{c_score:.0f}/100 ({c_label})", inline=True)
         e4.add_field(name="\U0001f4a4 Days Since Last Msg", value=dorm_text, inline=True)
         e4.add_field(name="❤️ Engagement Ratio", value=f"{u_engagement['reaction_per_msg']:.2f} reactions/msg sent", inline=True)
         e4.add_field(name="\U0001f4c8 Active Day %", value=f"{active_pct:.0f}% of days since join", inline=True)
@@ -1388,7 +1371,7 @@ class Stats(commands.Cog):
     async def leaderboard_cmd(self, ctx: commands.Context, days: int = 7, category: str = "messages"):
         """Show top 10 users in a selected category."""
         days = max(1, days)
-        valid_categories = ("messages", "voice", "streaks", "engagement", "social")
+        valid_categories = ("messages", "voice", "engagement", "social")
         category = category.lower()
         if category not in valid_categories:
             await ctx.send(f"Invalid category. Choose from: {', '.join(valid_categories)}")
@@ -1405,8 +1388,6 @@ class Stats(commands.Cog):
                 return _format_duration(int(val))
             if cat == "engagement":
                 return f"{val:.2f}"
-            if cat == "streaks":
-                return f"{int(val)}d"
             return f"{int(val):,}"
 
         # Build bar chart
@@ -1424,7 +1405,6 @@ class Stats(commands.Cog):
         category_labels = {
             "messages": "Messages",
             "voice": "Voice Time",
-            "streaks": "Streaks",
             "engagement": "Engagement",
             "social": "Social (Reactions Given)",
         }
@@ -1454,10 +1434,6 @@ class Stats(commands.Cog):
 
         w1 = database.get_user_word_stats(gid, user1.id, days)
         w2 = database.get_user_word_stats(gid, user2.id, days)
-        s1 = database.get_user_streaks(gid, user1.id, days)
-        s2 = database.get_user_streaks(gid, user2.id, days)
-        c1 = database.get_user_consistency(gid, user1.id, days)
-        c2 = database.get_user_consistency(gid, user2.id, days)
         e1_data = database.get_user_engagement_ratios(gid, user1.id, days)
         e2_data = database.get_user_engagement_ratios(gid, user2.id, days)
 
@@ -1482,8 +1458,6 @@ class Stats(commands.Cog):
             compare_row("Reacts Given", d1["reactions_given"], d2["reactions_given"]),
             compare_row("Reacts Recv", d1["reactions_received"], d2["reactions_received"]),
             compare_row("Avg Words", w1["avg_words"], w2["avg_words"], "{:.1f}"),
-            compare_row("Streak", s1["current"], s2["current"], "{}d"),
-            compare_row("Consistency", c1["score"], c2["score"], "{:.0f}"),
         ]
 
         # Embed 1: Head-to-Head

@@ -1039,37 +1039,6 @@ def get_user_streaks(guild_id: int, user_id: int, days: int) -> dict:
     }
 
 
-def get_user_consistency(guild_id: int, user_id: int, days: int) -> dict:
-    cutoff = _cutoff_date(days)
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT date, message_count FROM user_activity_daily "
-            "WHERE guild_id = ? AND user_id = ? AND date >= ? ORDER BY date",
-            (guild_id, user_id, cutoff),
-        ).fetchall()
-    if not rows:
-        return {"mean": 0, "std_dev": 0, "score": 0}
-    # Inactive days have no row in user_activity_daily. Zero-fill every calendar
-    # day from the user's first active day through today so gaps count against
-    # consistency — otherwise the score only measures evenness across active days
-    # and inflates to ~100 for sporadic users.
-    by_date = {r["date"]: r["message_count"] for r in rows}
-    start = datetime.datetime.strptime(rows[0]["date"], "%Y-%m-%d").date()
-    today = datetime.datetime.now(datetime.timezone.utc).date()
-    counts = []
-    d = start
-    while d <= today:
-        counts.append(by_date.get(d.strftime("%Y-%m-%d"), 0))
-        d += datetime.timedelta(days=1)
-    mean = sum(counts) / len(counts)
-    if mean == 0:
-        return {"mean": 0, "std_dev": 0, "score": 0}
-    variance = sum((c - mean) ** 2 for c in counts) / len(counts)
-    std_dev = variance ** 0.5
-    score = max(0, min(100, round(100 * (1 - std_dev / mean))))
-    return {"mean": round(mean, 1), "std_dev": round(std_dev, 1), "score": score}
-
-
 def get_user_weekday_split(guild_id: int, user_id: int, days: int) -> dict:
     cutoff = _cutoff_datetime(days)
     with get_conn() as conn:
@@ -1430,18 +1399,6 @@ def get_leaderboard(guild_id: int, days: int, category: str, limit: int = 10) ->
                 "GROUP BY user_id HAVING SUM(message_count) > 0 ORDER BY value DESC LIMIT ?",
                 (guild_id, cutoff, limit),
             ).fetchall()
-        elif category == "streaks":
-            # Streaks require Python computation — fetch all active users then compute
-            users = conn.execute(
-                "SELECT DISTINCT user_id FROM user_activity_daily WHERE guild_id = ? AND date >= ?",
-                (guild_id, cutoff),
-            ).fetchall()
-            streak_list = []
-            for u in users:
-                s = get_user_streaks(guild_id, u["user_id"], days)
-                streak_list.append({"user_id": u["user_id"], "value": s["current"]})
-            streak_list.sort(key=lambda x: x["value"], reverse=True)
-            return streak_list[:limit]
         else:
             rows = []
     return [{"user_id": r["user_id"], "value": r["value"]} for r in rows]
