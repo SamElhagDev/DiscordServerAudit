@@ -1,34 +1,54 @@
+import asyncio
 import logging
 import sqlite3
 import datetime
 import os
+import threading
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.environ.get("DiscordServerAudit_DB_PATH", "bot.db")
-_conn: sqlite3.Connection | None = None
+
+# Connections are thread-local: the event loop thread keeps its own persistent
+# connection (unchanged behaviour), and any worker thread spawned by run() gets
+# its own. WAL mode lets these connections read concurrently with a single
+# writer; the 10s busy timeout (sqlite3.connect's `timeout`) makes a blocked
+# writer wait instead of raising "database is locked".
+_local = threading.local()
 
 # Bump when adding a new one-time data migration in _run_migrations().
 _SCHEMA_VERSION = 1
 
 
 def _ensure_conn() -> sqlite3.Connection:
-    global _conn
-    if _conn is None:
-        _conn = sqlite3.connect(DB_PATH, timeout=10)
-        _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA journal_mode=WAL")
-        logger.debug("Opened persistent database connection to %s", DB_PATH)
-    return _conn
+    conn = getattr(_local, "conn", None)
+    if conn is None:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        _local.conn = conn
+        logger.debug("Opened thread-local DB connection to %s (thread=%s)",
+                     DB_PATH, threading.current_thread().name)
+    return conn
 
 
 def close_db():
-    global _conn
-    if _conn is not None:
-        _conn.close()
-        _conn = None
-        logger.info("Database connection closed")
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        conn.close()
+        _local.conn = None
+        logger.info("Database connection closed (thread=%s)", threading.current_thread().name)
+
+
+async def run(fn, *args, **kwargs):
+    """Execute a synchronous DB function in a worker thread so it doesn't block
+    the asyncio event loop. Each worker thread uses its own thread-local
+    connection, so concurrent calls are safe under WAL mode.
+
+    Usage: await database.run(database.log_message_event, guild_id, ...)
+    """
+    return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 def init_db():
@@ -369,6 +389,25 @@ def log_message_event(guild_id: int, channel_id: int, user_id: int, word_count: 
             "INSERT INTO message_events (guild_id, channel_id, user_id, recorded_at, word_count) VALUES (?, ?, ?, ?, ?)",
             (guild_id, channel_id, user_id, _now(), word_count),
         )
+
+
+def clear_recent_events(guild_id: int, cutoff_iso: str):
+    """Delete message_events and member_events at/after cutoff. Used by /scan
+    before re-ingesting history so a re-scan doesn't double-count."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM message_events WHERE guild_id = ? AND recorded_at >= ?", (guild_id, cutoff_iso))
+        conn.execute("DELETE FROM member_events WHERE guild_id = ? AND recorded_at >= ?", (guild_id, cutoff_iso))
+
+
+def bulk_log_reactions_received(guild_id: int, reaction_counts: dict):
+    """Upsert reactions_received counts keyed by (user_id, date). Used by /scan."""
+    with get_conn() as conn:
+        for (user_id, date), count in reaction_counts.items():
+            conn.execute(
+                "INSERT INTO user_activity_daily (guild_id, user_id, date, reactions_received) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(guild_id, user_id, date) DO UPDATE SET reactions_received = excluded.reactions_received",
+                (guild_id, user_id, date, count),
+            )
 
 
 def start_voice_session(guild_id: int, channel_id: int, user_id: int):

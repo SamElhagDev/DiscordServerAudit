@@ -130,6 +130,13 @@ class AdminBot(commands.Bot):
         elapsed = time.monotonic() - self._start_time
         guild_count = len(self.guilds)
         member_count = sum((g.member_count or 0) for g in self.guilds)
+        
+        await self.change_presence(
+            activity=discord.Activity(
+                type=discord.ActivityType.watching,
+                name=f"Auditing Server...",
+            )
+        )
 
         logger.info("=" * 60)
         logger.info("DiscordServerAudit v%s", __version__)

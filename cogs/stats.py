@@ -316,7 +316,8 @@ class Stats(commands.Cog):
             total = guild.member_count or 0
             bots = sum(1 for m in guild.members if m.bot)
             online = sum(1 for m in guild.members if m.status != discord.Status.offline)
-            database.save_member_snapshot(
+            await database.run(
+                database.save_member_snapshot,
                 guild.id, total, online, bots,
                 guild.premium_subscription_count or 0,
                 guild.premium_tier,
@@ -349,11 +350,11 @@ class Stats(commands.Cog):
                 d += datetime.timedelta(days=1)
 
             for date_str in dates_to_roll:
-                database.rollup_user_activity(guild.id, date_str)
-                database.rollup_channel_activity(guild.id, date_str)
+                await database.run(database.rollup_user_activity, guild.id, date_str)
+                await database.run(database.rollup_channel_activity, guild.id, date_str)
 
             retention = config.get("stats.retention_days", 30)
-            database.prune_old_events(retention)
+            await database.run(database.prune_old_events, retention)
             logger.info(
                 "Daily rollup complete for guild %r: dates=%d (%s..%s), retention=%dd",
                 guild.name, len(dates_to_roll),
@@ -386,7 +387,7 @@ class Stats(commands.Cog):
             return
         try:
             word_count = len(message.content.split()) if message.content else 0
-            database.log_message_event(message.guild.id, message.channel.id, message.author.id, word_count)
+            await database.run(database.log_message_event, message.guild.id, message.channel.id, message.author.id, word_count)
         except Exception:
             logger.error("Failed to log message event: guild=%s channel=%s user=%s", message.guild.id, message.channel.id, message.author.id, exc_info=True)
 
@@ -399,14 +400,14 @@ class Stats(commands.Cog):
         try:
             if before.channel is None and after.channel is not None:
                 logger.debug("Voice join: user=%s guild=%s channel=%s", member.id, member.guild.id, after.channel.id)
-                database.start_voice_session(member.guild.id, after.channel.id, member.id)
+                await database.run(database.start_voice_session, member.guild.id, after.channel.id, member.id)
             elif before.channel is not None and after.channel is None:
                 logger.debug("Voice leave: user=%s guild=%s channel=%s", member.id, member.guild.id, before.channel.id)
-                database.end_voice_session(member.guild.id, member.id)
+                await database.run(database.end_voice_session, member.guild.id, member.id)
             elif before.channel is not None and after.channel is not None and before.channel.id != after.channel.id:
                 logger.debug("Voice move: user=%s guild=%s %s→%s", member.id, member.guild.id, before.channel.id, after.channel.id)
-                database.end_voice_session(member.guild.id, member.id)
-                database.start_voice_session(member.guild.id, after.channel.id, member.id)
+                await database.run(database.end_voice_session, member.guild.id, member.id)
+                await database.run(database.start_voice_session, member.guild.id, after.channel.id, member.id)
         except Exception:
             logger.error("Failed to log voice state update: user=%s guild=%s", member.id, member.guild.id, exc_info=True)
 
@@ -474,7 +475,7 @@ class Stats(commands.Cog):
             return
         try:
             author_id = await self._resolve_message_author(payload)
-            database.increment_reaction(payload.guild_id, payload.user_id, author_id)
+            await database.run(database.increment_reaction, payload.guild_id, payload.user_id, author_id)
         except Exception:
             logger.error("Failed to log reaction add: guild=%s user=%s msg=%s", payload.guild_id, payload.user_id, payload.message_id, exc_info=True)
 
@@ -486,7 +487,7 @@ class Stats(commands.Cog):
             return
         try:
             author_id = await self._resolve_message_author(payload)
-            database.decrement_reaction(payload.guild_id, payload.user_id, author_id)
+            await database.run(database.decrement_reaction, payload.guild_id, payload.user_id, author_id)
         except Exception:
             logger.error("Failed to log reaction remove: guild=%s user=%s msg=%s", payload.guild_id, payload.user_id, payload.message_id, exc_info=True)
 
@@ -1845,15 +1846,7 @@ class Stats(commands.Cog):
         embed.add_field(name="Status", value="Starting...", inline=False)
         progress_msg = await ctx.send(embed=embed)
 
-        with database.get_conn() as conn:
-            conn.execute(
-                "DELETE FROM message_events WHERE guild_id = ? AND recorded_at >= ?",
-                (guild.id, cutoff_iso),
-            )
-            conn.execute(
-                "DELETE FROM member_events WHERE guild_id = ? AND recorded_at >= ?",
-                (guild.id, cutoff_iso),
-            )
+        await database.run(database.clear_recent_events, guild.id, cutoff_iso)
 
         text_channels = [
             ch for ch in (*guild.text_channels, *guild.voice_channels, *guild.stage_channels)
@@ -1893,7 +1886,7 @@ class Stats(commands.Cog):
                         total_reactions += r_count
 
                     if len(batch) >= BATCH_SIZE:
-                        database.bulk_log_message_events(batch)
+                        await database.run(database.bulk_log_message_events, batch)
                         total_messages += len(batch)
                         batch.clear()
 
@@ -1919,7 +1912,7 @@ class Stats(commands.Cog):
                     pass
 
         if batch:
-            database.bulk_log_message_events(batch)
+            await database.run(database.bulk_log_message_events, batch)
             total_messages += len(batch)
             batch.clear()
 
@@ -1929,7 +1922,8 @@ class Stats(commands.Cog):
         except discord.HTTPException:
             pass
 
-        database.save_member_snapshot(
+        await database.run(
+            database.save_member_snapshot,
             guild.id,
             guild.member_count or 0,
             sum(1 for m in guild.members if m.status != discord.Status.offline),
@@ -1944,17 +1938,11 @@ class Stats(commands.Cog):
                 joined_utc = member.joined_at.astimezone(datetime.timezone.utc)
                 member_events_batch.append((guild.id, member.id, "join", joined_utc.strftime("%Y-%m-%dT%H:%M:%S")))
         if member_events_batch:
-            database.bulk_log_member_events(member_events_batch)
+            await database.run(database.bulk_log_member_events, member_events_batch)
         member_joins = len(member_events_batch)
 
         if reaction_counts:
-            with database.get_conn() as conn:
-                for (user_id, date), count in reaction_counts.items():
-                    conn.execute(
-                        "INSERT INTO user_activity_daily (guild_id, user_id, date, reactions_received) VALUES (?, ?, ?, ?) "
-                        "ON CONFLICT(guild_id, user_id, date) DO UPDATE SET reactions_received = excluded.reactions_received",
-                        (guild.id, user_id, date, count),
-                    )
+            await database.run(database.bulk_log_reactions_received, guild.id, reaction_counts)
 
         embed.set_field_at(0, name="Status", value="\U0001f4ca Running daily rollups...", inline=False)
         try:
@@ -1965,8 +1953,8 @@ class Stats(commands.Cog):
         now = datetime.datetime.now(datetime.timezone.utc)
         for d in range(days + 1):
             date_str = (now - datetime.timedelta(days=d)).strftime("%Y-%m-%d")
-            database.rollup_user_activity(guild.id, date_str)
-            database.rollup_channel_activity(guild.id, date_str)
+            await database.run(database.rollup_user_activity, guild.id, date_str)
+            await database.run(database.rollup_channel_activity, guild.id, date_str)
 
         result = discord.Embed(
             title="✅ Scan Complete",
