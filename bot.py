@@ -61,6 +61,7 @@ _LOG_PATH = _setup_logging()
 # Project imports after logging is ready
 import config  # noqa: E402
 import database
+from utils.reconnect import cap_reconnect_backoff
 from utils.scheduler import IntervalScheduler
 from utils.help import RichHelpCommand
 
@@ -289,6 +290,7 @@ async def main():
         raise ValueError("DiscordServerAudit_TOKEN environment variable is not set")
 
     logger.info("Starting bot process...")
+    cap_reconnect_backoff()
     bot = AdminBot()
     async with bot:
         await bot.start(token)
