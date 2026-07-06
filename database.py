@@ -51,6 +51,61 @@ async def run(fn, *args, **kwargs):
     return await asyncio.to_thread(fn, *args, **kwargs)
 
 
+_fts5_available = None
+
+
+def fts5_available() -> bool:
+    """True if this SQLite build supports FTS5 (cached probe)."""
+    global _fts5_available
+    if _fts5_available is None:
+        try:
+            probe = sqlite3.connect(":memory:")
+            probe.execute("CREATE VIRTUAL TABLE _fts_probe USING fts5(x)")
+            probe.close()
+            _fts5_available = True
+            logger.info("SQLite FTS5 available — fact-check relevance tier enabled")
+        except Exception:
+            _fts5_available = False
+            logger.warning("SQLite FTS5 unavailable — fact-check relevance tier disabled")
+    return _fts5_available
+
+
+def _init_message_context_fts():
+    """FTS5 index + sync triggers for message_context (no-op if FTS5 missing)."""
+    if not fts5_available():
+        return
+    with get_conn() as conn:
+        existed = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_context_fts'"
+        ).fetchone() is not None
+        conn.executescript("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS message_context_fts USING fts5(
+                content,
+                content='message_context',
+                content_rowid='id',
+                tokenize='porter unicode61'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS message_context_ai
+            AFTER INSERT ON message_context BEGIN
+                INSERT INTO message_context_fts(rowid, content) VALUES (new.id, new.content);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS message_context_ad
+            AFTER DELETE ON message_context BEGIN
+                INSERT INTO message_context_fts(message_context_fts, rowid, content)
+                    VALUES('delete', old.id, old.content);
+            END;
+        """)
+        # First creation with pre-existing rows (e.g. FTS enabled later): backfill the index.
+        if not existed:
+            base = conn.execute("SELECT COUNT(*) FROM message_context").fetchone()[0]
+            if base:
+                conn.execute("INSERT INTO message_context_fts(message_context_fts) VALUES('rebuild')")
+                logger.info("Built message_context FTS index from %d existing rows", base)
+    logger.debug("message_context FTS5 index + triggers ready")
+
+
 def init_db():
     logger.info("Initialising database at: %s", DB_PATH)
     try:
@@ -154,9 +209,27 @@ def init_db():
                     UNIQUE(guild_id, channel_id, date)
                 );
 
+                -- Fact-check: message text store for context/relevance retrieval
+                CREATE TABLE IF NOT EXISTS message_context (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    author_name TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(message_id)
+                );
+
                 -- Indexes for stats tables
                 CREATE INDEX IF NOT EXISTS idx_member_snapshots_guild_time
                     ON member_snapshots(guild_id, recorded_at);
+
+                CREATE INDEX IF NOT EXISTS idx_message_context_channel
+                    ON message_context(guild_id, channel_id, recorded_at);
+                CREATE INDEX IF NOT EXISTS idx_message_context_guild_time
+                    ON message_context(guild_id, recorded_at);
 
                 CREATE INDEX IF NOT EXISTS idx_message_events_guild_time
                     ON message_events(guild_id, recorded_at);
@@ -188,6 +261,7 @@ def init_db():
                     ON channel_activity_daily(guild_id, channel_id, date);
             """)
         logger.info("Database schema ready")
+        _init_message_context_fts()
         _run_migrations()
         logger.info("Database initialised successfully")
     except Exception:
@@ -580,6 +654,142 @@ def prune_old_events(days: int):
         r2 = conn.execute("DELETE FROM voice_sessions WHERE joined_at < ? AND left_at IS NOT NULL", (cutoff,))
         logger.info("Pruned old events: %d messages, %d voice sessions (older than %d days)",
                      r1.rowcount, r2.rowcount, days)
+
+
+# ---------------------------------------------------------------------------
+# Fact-check: message context store
+# ---------------------------------------------------------------------------
+
+def log_context_message(guild_id: int, channel_id: int, message_id: int,
+                        user_id: int, author_name: str, content: str,
+                        max_stored_chars: int = 2000, recorded_at: str | None = None):
+    """Store message text for fact-check context (idempotent on message_id)."""
+    if content and len(content) > max_stored_chars:
+        content = content[:max_stored_chars]
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO message_context "
+            "(guild_id, channel_id, message_id, user_id, author_name, content, recorded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (guild_id, channel_id, message_id, user_id, author_name, content, recorded_at or _now()),
+        )
+
+
+def bulk_log_context_messages(rows: list, max_stored_chars: int = 2000):
+    """Batch-store context messages in one transaction (for backfill).
+
+    Each row: (guild_id, channel_id, message_id, user_id, author_name, content, recorded_at).
+    """
+    if not rows:
+        return
+    prepared = []
+    for g, c, m, u, name, content, recorded_at in rows:
+        if content and len(content) > max_stored_chars:
+            content = content[:max_stored_chars]
+        prepared.append((g, c, m, u, name, content, recorded_at or _now()))
+    with get_conn() as conn:
+        conn.executemany(
+            "INSERT OR IGNORE INTO message_context "
+            "(guild_id, channel_id, message_id, user_id, author_name, content, recorded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            prepared,
+        )
+
+
+def count_message_context(guild_id: int) -> int:
+    """Number of stored context rows for a guild."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM message_context WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
+    return row["c"] if row else 0
+
+
+def prune_message_context(retention_days: int, max_per_channel: int = 0) -> int:
+    """Prune message_context (0 = skip). Returns rows deleted; FTS stays in sync via triggers."""
+    deleted = 0
+    with get_conn() as conn:
+        if retention_days and retention_days > 0:
+            cutoff = _cutoff_datetime(retention_days)
+            deleted += conn.execute(
+                "DELETE FROM message_context WHERE recorded_at < ?", (cutoff,)
+            ).rowcount
+        if max_per_channel and max_per_channel > 0:
+            # Keep newest N per channel; correlated count avoids window functions.
+            deleted += conn.execute(
+                "DELETE FROM message_context WHERE id IN ("
+                "  SELECT mc.id FROM message_context mc WHERE ("
+                "    SELECT COUNT(*) FROM message_context m2"
+                "    WHERE m2.guild_id = mc.guild_id AND m2.channel_id = mc.channel_id"
+                "      AND (m2.recorded_at > mc.recorded_at"
+                "           OR (m2.recorded_at = mc.recorded_at AND m2.id > mc.id))"
+                "  ) >= ?"
+                ")",
+                (max_per_channel,),
+            ).rowcount
+    if deleted:
+        logger.info("Pruned %d message_context rows (retention_days=%d, max_per_channel=%d)",
+                    deleted, retention_days, max_per_channel)
+    return deleted
+
+
+def get_recent_context(guild_id: int, channel_id: int, same_channel_limit: int,
+                       total_limit: int, since_iso: str) -> list:
+    """Recency tier: recent rows since *since_iso* (same-channel first, then server-wide)."""
+    with get_conn() as conn:
+        same = conn.execute(
+            "SELECT * FROM message_context "
+            "WHERE guild_id = ? AND channel_id = ? AND recorded_at >= ? "
+            "ORDER BY recorded_at DESC, id DESC LIMIT ?",
+            (guild_id, channel_id, since_iso, same_channel_limit),
+        ).fetchall()
+        wide = conn.execute(
+            "SELECT * FROM message_context "
+            "WHERE guild_id = ? AND recorded_at >= ? "
+            "ORDER BY recorded_at DESC, id DESC LIMIT ?",
+            (guild_id, since_iso, total_limit),
+        ).fetchall()
+    return list(same) + list(wide)
+
+
+def get_relevant_history(guild_id: int, match_query: str, limit: int,
+                         exclude_ids: set | None = None,
+                         since_iso: str | None = None, min_score: float = 0.0) -> list:
+    """Relevance tier: FTS5 MATCH over history, ranked by bm25. [] if FTS5/query unavailable."""
+    if not match_query or not fts5_available():
+        return []
+    # Over-fetch so exclude_ids/min_score filtering can still fill `limit`.
+    fetch = max(limit * 3, limit + (len(exclude_ids) if exclude_ids else 0))
+    sql = (
+        "SELECT mc.*, bm25(message_context_fts) AS score "
+        "FROM message_context_fts "
+        "JOIN message_context mc ON mc.id = message_context_fts.rowid "
+        "WHERE message_context_fts MATCH ? AND mc.guild_id = ?"
+    )
+    params: list = [match_query, guild_id]
+    if since_iso:
+        sql += " AND mc.recorded_at >= ?"
+        params.append(since_iso)
+    sql += " ORDER BY score LIMIT ?"
+    params.append(fetch)
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+    except sqlite3.OperationalError:
+        logger.debug("FTS5 MATCH query rejected: %r", match_query, exc_info=True)
+        return []
+    exclude_ids = exclude_ids or set()
+    out = []
+    for r in rows:
+        if r["message_id"] in exclude_ids:
+            continue
+        # bm25() is negative; more-negative = more relevant.
+        if min_score and (-r["score"]) < min_score:
+            continue
+        out.append(r)
+        if len(out) >= limit:
+            break
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -63,3 +63,32 @@ factcheck:
   max_images: 4                    # Max images to include per fact-check
   max_image_bytes: 10485760        # Max size per image in bytes (10 MB)
   image_download_timeout: 5        # Seconds to wait per image download
+
+  # Google Search grounding — verify claims against live web results.
+  grounding:
+    enabled: true                  # Enable Google Search grounding
+    max_sources: 5                 # Max source links shown in the embed
+    require_source_for_negative: true  # Downgrade "Mostly False" with 0 sources to "Unverifiable"
+
+  # Conversational context — reference prior server messages (stored locally in SQLite).
+  context:
+    enabled: true                  # Store + use message context
+    # storage
+    storage_retention_days: 0      # Delete horizon. 0 = keep forever
+    max_messages_per_channel: 0    # Per-channel row cap. 0 = unlimited
+    max_stored_chars: 2000         # Truncate stored text to this length
+    excluded_channels: []          # Channel IDs never stored or used as context
+    excluded_users: []             # User IDs never stored or used as context
+    # recency tier (query window, never deletes)
+    recency_window_hours: 168      # What counts as "recent" (7 days)
+    max_context_messages: 25       # Max recent messages injected per check
+    same_channel_limit: 15         # How many may come from the trigger channel
+    # relevance tier (FTS5 over all retained history)
+    history_relevance:
+      enabled: true                # FTS5 relevance retrieval (auto-off if FTS5 missing)
+      lookback_days: 0             # How far back FTS reaches. 0 = all history
+      archive_max_messages: 10     # Max relevance messages injected per check
+      min_score: 0.0               # bm25 floor. 0 = no floor
+    # backfill (/factcheckrefresh)
+    backfill_messages_per_channel: 1000  # Max history pulled per channel. 0 = unlimited
+    backfill_channel_delay: 0.5    # Seconds between channels during backfill

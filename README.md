@@ -246,10 +246,20 @@ The `!ask` command supports 70+ actions including: messaging (send messages, emb
 
 | Command | Description |
 |---|---|
-| `/factcheck` | Show fact-check configuration and session stats |
+| `/factcheck` | Show fact-check configuration, context/grounding status, and session stats |
+| `/factcheckrefresh` | Backfill the context store from existing channel history (admin) |
 | React with the configured emoji | Triggers an AI fact-check on the reacted message |
 
 Fact-checking is triggered by reacting to any message with the configured emoji (default: magnifying glass). The bot replies with a detailed breakdown of each claim, per-claim verdicts, an overall verdict, and an analysis paragraph. Includes per-message cooldown and per-user rate limiting.
+
+**Web grounding (`factcheck.grounding`).** When enabled, fact-checks use Gemini's Google Search grounding so claims are verified against live web results instead of the model's training data — this fixes cases where a real, recent article was wrongly dismissed as nonexistent. Grounded verdicts list their sources. A guardrail (`require_source_for_negative`) downgrades a "Mostly False" verdict to "Unverifiable" when no source backs it, so the bot never asserts an uncorroborated denial. Note: Google Search grounding is billed per grounded request by the Gemini API — check current pricing before enabling on a busy server.
+
+**Conversational context (`factcheck.context`).** The bot stores recent message text locally (SQLite; storing costs no tokens) so verdicts can resolve references like "that article" or "he said". Two tiers feed each check: a *recency* window (recent server-wide messages) and a *relevance* tier that uses a SQLite FTS5 index to pull the most relevant messages from **all retained history** — so a request can reference something posted long ago at a bounded per-request cost. Context is used only to understand the message; the verdict is always about the message you reacted to.
+
+- `storage_retention_days` is the sole delete horizon and defaults to **`0` = keep forever**. This retains all message text indefinitely (maximizes recall); set a finite number of days for a tighter privacy posture, or `0` to keep everything. It is independent of `recency_window_hours` (a query window that never deletes).
+- Set `excluded_channels` / `excluded_users` to keep private channels or specific users out of the context store entirely (applied to both live capture and backfill).
+- Run `/factcheckrefresh` after enabling context to seed the store from existing history (idempotent, admin-only, rate-limited; preserves each message's original timestamp).
+- The relevance tier requires SQLite FTS5; if unavailable it disables gracefully and the recency tier still works.
 
 All commands require the admin role configured in `config.yaml`.
 

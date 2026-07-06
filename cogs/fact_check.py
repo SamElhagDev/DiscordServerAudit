@@ -1,9 +1,11 @@
 import asyncio
 import dataclasses
+import datetime
 import json
 import logging
 import re
 import time
+import urllib.parse
 
 import aiohttp
 import discord
@@ -11,10 +13,41 @@ from discord.ext import commands
 from google.genai import types as genai_types
 
 import config
+import database
 from utils.gemini import get_client
 from utils.permissions import has_admin_role
 
 logger = logging.getLogger(__name__)
+
+# Prune the context store every N stored messages.
+_PRUNE_EVERY = 500
+
+# Stopwords dropped when building FTS query terms.
+_STOPWORDS = frozenset("""
+a an the and or but if then else for to of in on at by with from as is are was were be been
+being this that these those it its i you he she they we me my your his her their our not no do
+does did have has had will would can could should may might must about into over under out up
+down so than too very just also more most some any all one two get got make made say said
+""".split())
+
+
+def _iso_hours_ago(hours: float) -> str:
+    dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _iso_days_ago(days: float) -> str:
+    dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _uri_host(uri: str) -> str:
+    try:
+        host = urllib.parse.urlparse(uri).netloc
+        return host or uri
+    except Exception:
+        return uri
+
 
 # ---------------------------------------------------------------------------
 # Verdict colours & emojis
@@ -57,6 +90,35 @@ class ContentBundle:
         return bool(self.text.strip() or self.images or self.embed_text.strip())
 
 
+@dataclasses.dataclass
+class GroundingSource:
+    """A web source Gemini used when grounding a fact-check."""
+    title: str | None
+    uri: str
+
+
+@dataclasses.dataclass
+class ContextMessage:
+    """A single prior message injected as fact-check context."""
+    author_name: str
+    channel_id: int
+    is_same_channel: bool
+    content: str
+    recorded_at: str
+    source: str  # "recency" | "relevance"
+
+
+@dataclasses.dataclass
+class ContextWindow:
+    """Two-tier conversational context assembled for a fact-check."""
+    recency: list[ContextMessage] = dataclasses.field(default_factory=list)
+    relevance: list[ContextMessage] = dataclasses.field(default_factory=list)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.recency and not self.relevance
+
+
 class FactCheck(commands.Cog):
     """React with an emoji to fact-check any message using AI."""
 
@@ -66,6 +128,7 @@ class FactCheck(commands.Cog):
         self._checked_messages: dict[int, float] = {}   # message_id → monotonic time
         self._user_limits: dict[int, list[float]] = {}   # user_id → [monotonic timestamps]
         self._session_check_count: int = 0
+        self._context_insert_count: int = 0   # amortized prune counter
 
     # ------------------------------------------------------------------
     # Helpers
@@ -236,8 +299,176 @@ class FactCheck(commands.Cog):
             reply_context=reply_context,
         )
 
+    # ------------------------------------------------------------------
+    # Conversational context
+    # ------------------------------------------------------------------
+
     @staticmethod
-    def _build_content_parts(bundle: ContentBundle) -> list:
+    def _context_excluded(channel_id: int, user_id: int) -> bool:
+        """True if this channel or user is excluded from context storage."""
+        if channel_id in config.get("factcheck.context.excluded_channels", []):
+            return True
+        if user_id in config.get("factcheck.context.excluded_users", []):
+            return True
+        return False
+
+    @commands.Cog.listener("on_message")
+    async def capture_context_message(self, message: discord.Message):
+        """Store message text for fact-check context."""
+        if not config.get("factcheck.context.enabled", True):
+            return
+        if message.guild is None or message.author.bot:
+            return
+        if not (message.content or "").strip():
+            return
+        if self._context_excluded(message.channel.id, message.author.id):
+            return
+        try:
+            max_chars = config.get("factcheck.context.max_stored_chars", 2000)
+            await database.run(
+                database.log_context_message,
+                message.guild.id, message.channel.id, message.id,
+                message.author.id, message.author.display_name,
+                message.content, max_chars,
+            )
+            self._context_insert_count += 1
+            if self._context_insert_count >= _PRUNE_EVERY:
+                self._context_insert_count = 0
+                retention = config.get("factcheck.context.storage_retention_days", 0)
+                max_per_ch = config.get("factcheck.context.max_messages_per_channel", 0)
+                if (retention and retention > 0) or (max_per_ch and max_per_ch > 0):
+                    await database.run(database.prune_message_context, retention, max_per_ch)
+        except Exception:
+            logger.warning(
+                "Failed to store message context | guild=%s msg=%s",
+                message.guild.id, message.id, exc_info=True,
+            )
+
+    @staticmethod
+    def _history_query_terms(text: str, max_terms: int = 12) -> str | None:
+        """FTS5 MATCH query from a message. Terms are quoted so arbitrary text can't break it."""
+        if not text:
+            return None
+        quoted: list[str] = []
+        seen: set[str] = set()
+        # Quoted phrases first.
+        for phrase in re.findall(r'"([^"]{3,})"', text):
+            cleaned = phrase.replace('"', "").strip()
+            if cleaned and cleaned.lower() not in seen:
+                seen.add(cleaned.lower())
+                quoted.append(f'"{cleaned}"')
+        # Then significant tokens.
+        for tok in re.findall(r"[A-Za-z0-9']+", text):
+            low = tok.lower()
+            if len(low) < 3 or low in _STOPWORDS or low in seen:
+                continue
+            seen.add(low)
+            quoted.append(f'"{tok}"')
+            if len(quoted) >= max_terms:
+                break
+        if not quoted:
+            return None
+        return " OR ".join(quoted)
+
+    def _chan_label(self, channel_id: int) -> str:
+        ch = self.bot.get_channel(channel_id)
+        name = getattr(ch, "name", None)
+        return f"[#{name}]" if name else f"[channel {channel_id}]"
+
+    async def _build_context_window(self, message: discord.Message) -> ContextWindow:
+        """Assemble the recency + relevance context window for a message."""
+        if not config.get("factcheck.context.enabled", True):
+            return ContextWindow()
+
+        guild_id = message.guild.id
+        channel_id = message.channel.id
+        trigger_id = message.id
+
+        # --- Tier 1: recency ---
+        recency_hours = config.get("factcheck.context.recency_window_hours", 168)
+        same_limit = config.get("factcheck.context.same_channel_limit", 15)
+        total_limit = config.get("factcheck.context.max_context_messages", 25)
+        since_iso = _iso_hours_ago(recency_hours)
+
+        recency: list[ContextMessage] = []
+        seen_ids: set[int] = {trigger_id}
+        try:
+            rows = await database.run(
+                database.get_recent_context, guild_id, channel_id,
+                same_limit, total_limit, since_iso,
+            )
+        except Exception:
+            logger.warning("Recency context query failed | guild=%s", guild_id, exc_info=True)
+            rows = []
+        for r in rows:
+            mid = r["message_id"]
+            if mid in seen_ids:
+                continue
+            seen_ids.add(mid)
+            recency.append(ContextMessage(
+                author_name=r["author_name"], channel_id=r["channel_id"],
+                is_same_channel=(r["channel_id"] == channel_id),
+                content=r["content"], recorded_at=r["recorded_at"], source="recency",
+            ))
+            if len(recency) >= total_limit:
+                break
+        recency.sort(key=lambda m: m.recorded_at)  # oldest -> newest
+
+        # --- Tier 2: relevance (FTS5) ---
+        relevance: list[ContextMessage] = []
+        rel_cfg = config.get("factcheck.context.history_relevance.enabled", True)
+        if rel_cfg and database.fts5_available():
+            query = self._history_query_terms(message.content or "")
+            if query:
+                arch_max = config.get("factcheck.context.history_relevance.archive_max_messages", 10)
+                lookback = config.get("factcheck.context.history_relevance.lookback_days", 0)
+                min_score = config.get("factcheck.context.history_relevance.min_score", 0.0)
+                rel_since = _iso_days_ago(lookback) if lookback and lookback > 0 else None
+                try:
+                    rel_rows = await database.run(
+                        database.get_relevant_history, guild_id, query,
+                        arch_max, set(seen_ids), rel_since, min_score,
+                    )
+                except Exception:
+                    logger.warning("Relevance context query failed | guild=%s", guild_id, exc_info=True)
+                    rel_rows = []
+                for r in rel_rows:
+                    relevance.append(ContextMessage(
+                        author_name=r["author_name"], channel_id=r["channel_id"],
+                        is_same_channel=(r["channel_id"] == channel_id),
+                        content=r["content"], recorded_at=r["recorded_at"], source="relevance",
+                    ))
+        return ContextWindow(recency=recency, relevance=relevance)
+
+    def _format_context_block(self, window: ContextWindow) -> str:
+        """Render a ContextWindow into a prompt section."""
+        if window.is_empty:
+            return ""
+        out: list[str] = []
+        if window.recency:
+            out.append(
+                "Prior conversation on this server (oldest first). Use it to resolve "
+                'references like "that article" or "he said"; do NOT fact-check these '
+                "lines themselves:"
+            )
+            for m in window.recency:
+                out.append(f"{self._chan_label(m.channel_id)} {m.author_name}: {m.content}")
+        if window.relevance:
+            out.append("")
+            out.append(
+                "Possibly-related earlier messages from this server's history (may be "
+                "older than the recent conversation above). Context only — do NOT "
+                "fact-check these lines themselves:"
+            )
+            for m in window.relevance:
+                out.append(f"{self._chan_label(m.channel_id)} {m.author_name}: {m.content}")
+        out.append("---")
+        return "\n".join(out)
+
+    @staticmethod
+    def _build_content_parts(
+        bundle: ContentBundle, context_block: str = "", grounding: bool = False,
+    ) -> list:
         """Build a multimodal content parts list for the Gemini API."""
         parts: list = []
 
@@ -253,6 +484,21 @@ class FactCheck(commands.Cog):
                 "If the content includes images, analyze visible text, charts,\n"
                 "data, infographics, and visual claims in the images alongside any\n"
                 "message text.\n\n"
+            )
+
+        # 1b. Grounding instructions
+        if grounding:
+            instructions += (
+                "You have access to Google Search. Your training data may be out of date,\n"
+                "so follow these rules:\n"
+                "- Do NOT assume an article, study, event, product, or person does not exist\n"
+                "  just because you don't recognize it. Search to check before judging.\n"
+                "- When a claim depends on a specific source, a recent event, or a date, use\n"
+                "  search to verify existence and dates rather than relying on memory.\n"
+                "- If current search results conflict with your prior knowledge, trust the\n"
+                "  search results and say so.\n"
+                "- If search genuinely finds no evidence a source exists, mark it Unverifiable\n"
+                "  and state what you searched — do NOT confidently call it False.\n\n"
             )
 
         # 2. Reply context
@@ -295,6 +541,14 @@ class FactCheck(commands.Cog):
             "}\n\n"
         )
 
+        # 2b. Conversational context
+        if context_block:
+            instructions += (
+                "The following is prior conversation context to help you understand the\n"
+                "message. Only fact-check the message below, not the context lines.\n\n"
+                f"{context_block}\n\n"
+            )
+
         # 3. Message text
         if bundle.text.strip():
             instructions += f'Message text:\n"{bundle.text}"\n\n'
@@ -312,18 +566,60 @@ class FactCheck(commands.Cog):
 
         return parts
 
-    async def _call_gemini(self, contents: list) -> dict | None:
-        """Send *contents* to the configured Gemini model, return parsed dict or None."""
+    @staticmethod
+    def _extract_sources(response) -> list[GroundingSource]:
+        """Pull grounding source links from a Gemini response ([] on any gap)."""
+        sources: list[GroundingSource] = []
+        try:
+            candidates = getattr(response, "candidates", None) or []
+            if not candidates:
+                return sources
+            meta = getattr(candidates[0], "grounding_metadata", None)
+            chunks = getattr(meta, "grounding_chunks", None) or []
+            seen: set[str] = set()
+            for chunk in chunks:
+                web = getattr(chunk, "web", None)
+                uri = getattr(web, "uri", None) if web else None
+                if not uri or uri in seen:
+                    continue
+                seen.add(uri)
+                sources.append(GroundingSource(title=getattr(web, "title", None), uri=uri))
+        except Exception:
+            logger.debug("Failed to extract grounding sources", exc_info=True)
+        return sources
+
+    @staticmethod
+    def _grounding_config():
+        """Build the Google Search grounding config, or None if it can't be built."""
+        try:
+            return genai_types.GenerateContentConfig(
+                tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+                temperature=0.2,
+            )
+        except Exception:
+            logger.warning("Failed to build grounding config; proceeding ungrounded", exc_info=True)
+            return None
+
+    async def _call_gemini(
+        self, contents: list, *, grounding_config=None,
+    ) -> tuple[dict | None, list[GroundingSource]]:
+        """Send *contents* to Gemini. Returns (parsed dict | None, grounding sources)."""
         client = get_client()
         if not client:
-            return None
+            return None, []
 
         model = config.get("factcheck.model", "gemini-3-flash-preview")
         timeout = config.get("factcheck.timeout_seconds", 45)
+        grounded = grounding_config is not None
+
+        call_kwargs = {"model": model, "contents": contents}
+        if grounded:
+            call_kwargs["config"] = grounding_config
+
         t0 = time.perf_counter()
         try:
             response = await asyncio.wait_for(
-                client.aio.models.generate_content(model=model, contents=contents),
+                client.aio.models.generate_content(**call_kwargs),
                 timeout=timeout,
             )
             elapsed = time.perf_counter() - t0
@@ -332,27 +628,47 @@ class FactCheck(commands.Cog):
             raw = re.sub(r"^```(?:json)?\s*", "", raw)
             raw = re.sub(r"\s*```$", "", raw)
             result = json.loads(raw)
+            sources = self._extract_sources(response) if grounded else []
             logger.info(
-                "Fact-check Gemini response | model=%s elapsed=%.2fs verdict=%s confidence=%s claims=%d",
-                model, elapsed, result.get("verdict"), result.get("confidence"), len(result.get("claims", [])),
+                "Fact-check Gemini response | model=%s elapsed=%.2fs verdict=%s confidence=%s claims=%d grounded=%s sources=%d",
+                model, elapsed, result.get("verdict"), result.get("confidence"),
+                len(result.get("claims", [])), grounded, len(sources),
             )
-            return result
+            return result, sources
         except asyncio.TimeoutError:
             elapsed = time.perf_counter() - t0
             logger.warning("Fact-check Gemini call timed out after %.2fs (limit=%ds)", elapsed, timeout)
-            return None
+            return None, []
         except json.JSONDecodeError as e:
             elapsed = time.perf_counter() - t0
             logger.error("Fact-check Gemini JSON parse failed after %.2fs: %s", elapsed, e)
-            return None
+            return None, []
         except Exception:
             elapsed = time.perf_counter() - t0
             logger.error("Fact-check Gemini call failed after %.2fs", elapsed, exc_info=True)
-            return None
+            return None, []
 
     @staticmethod
-    def _build_embed(result: dict) -> discord.Embed:
+    def _apply_negative_guardrail(result: dict, sources: list, guild_id, message_id) -> dict:
+        """Downgrade an unsourced "Mostly False" verdict to "Unverifiable"."""
+        if not config.get("factcheck.grounding.require_source_for_negative", True):
+            return result
+        if result.get("verdict") == "Mostly False" and not sources:
+            logger.info(
+                "Fact-check guardrail: Mostly False -> Unverifiable (no grounding sources) | guild=%s msg=%s",
+                guild_id, message_id,
+            )
+            result["verdict"] = "Unverifiable"
+            result["confidence"] = "Low"
+            note = "Downgraded from Mostly False: no live source corroborated this denial."
+            analysis = (result.get("analysis") or "").strip()
+            result["analysis"] = f"{analysis}\n\n{note}" if analysis else note
+        return result
+
+    @staticmethod
+    def _build_embed(result: dict, sources: list | None = None) -> discord.Embed:
         """Build a rich verdict embed from a parsed Gemini response."""
+        sources = sources or []
         verdict = result.get("verdict", "Unverifiable")
         style = _VERDICT_STYLES.get(verdict, _DEFAULT_STYLE)
         confidence = result.get("confidence", "Unknown")
@@ -404,7 +720,22 @@ class FactCheck(commands.Cog):
             inline=False,
         )
 
-        embed.set_footer(text="AI-generated — verify important claims independently | Powered by Gemini")
+        # Sources field (grounding)
+        if sources:
+            max_sources = config.get("factcheck.grounding.max_sources", 5)
+            lines = []
+            for s in sources[:max_sources]:
+                title = (s.title or _uri_host(s.uri)).strip() or _uri_host(s.uri)
+                lines.append(f"[{title}]({s.uri})")
+            value = "\n".join(lines)
+            if len(value) > 1024:
+                value = value[:1000].rsplit("\n", 1)[0] + "\n…"
+            embed.add_field(name="Sources", value=value, inline=False)
+
+        footer = "AI-generated — verify important claims independently | Powered by Gemini"
+        if sources:
+            footer += " + Google"
+        embed.set_footer(text=footer)
         return embed
 
     # ------------------------------------------------------------------
@@ -532,10 +863,22 @@ class FactCheck(commands.Cog):
             logger.error("Failed to send checking placeholder for msg %s", payload.message_id, exc_info=True)
             return
 
-        # Call Gemini
+        # Build conversational context
+        window = await self._build_context_window(message)
+        context_block = self._format_context_block(window)
+        if not window.is_empty:
+            logger.info(
+                "Fact-check context | guild=%s msg=%s recency=%d relevance=%d",
+                payload.guild_id, payload.message_id, len(window.recency), len(window.relevance),
+            )
+
+        # Call Gemini. Build the grounding config first so the prompt only claims
+        # search access when the tool is actually attached.
+        gcfg = self._grounding_config() if config.get("factcheck.grounding.enabled", True) else None
+        grounding_on = gcfg is not None
         t0 = time.perf_counter()
-        contents = self._build_content_parts(bundle)
-        result = await self._call_gemini(contents)
+        contents = self._build_content_parts(bundle, context_block=context_block, grounding=grounding_on)
+        result, sources = await self._call_gemini(contents, grounding_config=gcfg)
         elapsed = time.perf_counter() - t0
 
         if result is None:
@@ -552,8 +895,12 @@ class FactCheck(commands.Cog):
                 logger.debug("Failed to edit reply to error embed", exc_info=True)
             return
 
+        # Guardrail on unsourced denials
+        if grounding_on:
+            result = self._apply_negative_guardrail(result, sources, payload.guild_id, payload.message_id)
+
         # Success — build verdict embed and edit
-        embed = self._build_embed(result)
+        embed = self._build_embed(result, sources)
         try:
             await reply.edit(embed=embed)
         except Exception:
@@ -596,7 +943,136 @@ class FactCheck(commands.Cog):
         embed.add_field(name="Cooldown", value=f"{cooldown}s per message", inline=True)
         embed.add_field(name="Timeout", value=f"{timeout}s", inline=True)
         embed.add_field(name="Checks this session", value=str(self._session_check_count), inline=True)
+
+        # Context awareness + grounding status
+        ctx_enabled = config.get("factcheck.context.enabled", True)
+        retention = config.get("factcheck.context.storage_retention_days", 0)
+        retention_str = "forever" if not retention else f"{retention}d"
+        recency_h = config.get("factcheck.context.recency_window_hours", 168)
+        rel_enabled = config.get("factcheck.context.history_relevance.enabled", True)
+        lookback = config.get("factcheck.context.history_relevance.lookback_days", 0)
+        fts_ok = database.fts5_available()
+        grounding_on = config.get("factcheck.grounding.enabled", True)
+        guardrail = config.get("factcheck.grounding.require_source_for_negative", True)
+        try:
+            store_size = await database.run(database.count_message_context, ctx.guild.id)
+        except Exception:
+            store_size = "?"
+
+        ctx_val = (
+            f"{'On' if ctx_enabled else 'Off'} · storage {retention_str} · recency {recency_h}h"
+        )
+        embed.add_field(name="Context awareness", value=ctx_val, inline=False)
+        if not fts_ok:
+            rel_val = "unavailable (no FTS5)"
+        else:
+            lb = "all" if not lookback else f"{lookback}d"
+            rel_val = f"{'On' if rel_enabled else 'Off'} · lookback {lb}"
+        embed.add_field(name="History relevance", value=rel_val, inline=True)
+        embed.add_field(name="Context store", value=f"{store_size} msgs", inline=True)
+        embed.add_field(
+            name="Web grounding",
+            value=f"{'On' if grounding_on else 'Off'} · guardrail {'On' if guardrail else 'Off'}",
+            inline=True,
+        )
         await ctx.send(embed=embed)
+
+    @commands.hybrid_command(
+        name="factcheckrefresh",
+        description="Backfill fact-check context from channel history (admin)",
+    )
+    @commands.guild_only()
+    @has_admin_role()
+    async def factcheck_refresh(self, ctx: commands.Context):
+        """Seed the context store from existing channel history."""
+        if not config.get("factcheck.context.enabled", True):
+            await ctx.send("Context storage is disabled (`factcheck.context.enabled` is false).")
+            return
+
+        guild = ctx.guild
+        per_channel = config.get("factcheck.context.backfill_messages_per_channel", 1000)
+        history_limit = per_channel if per_channel and per_channel > 0 else None  # 0 = unlimited
+        delay = config.get("factcheck.context.backfill_channel_delay", 0.5)
+        max_chars = config.get("factcheck.context.max_stored_chars", 2000)
+        retention = config.get("factcheck.context.storage_retention_days", 0)
+        after_dt = None
+        if retention and retention > 0:
+            after_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=retention)
+
+        status = await ctx.send(embed=discord.Embed(
+            title="\U0001F504  Refreshing fact-check context…",
+            description="Scanning channel history — this may take a while.",
+            color=0x95A5A6,
+        ))
+
+        try:
+            before_count = await database.run(database.count_message_context, guild.id)
+        except Exception:
+            before_count = 0
+
+        excluded_channels = config.get("factcheck.context.excluded_channels", [])
+        channels_scanned = 0
+        messages_seen = 0
+        for channel in guild.text_channels:
+            if channel.id in excluded_channels:
+                continue
+            perms = channel.permissions_for(guild.me)
+            if not perms.read_message_history:
+                continue
+            channels_scanned += 1
+            batch = []
+            try:
+                async for msg in channel.history(limit=history_limit, after=after_dt):
+                    if msg.author.bot or not (msg.content or "").strip():
+                        continue
+                    if self._context_excluded(channel.id, msg.author.id):
+                        continue
+                    messages_seen += 1
+                    batch.append((
+                        guild.id, channel.id, msg.id, msg.author.id,
+                        msg.author.display_name, msg.content,
+                        msg.created_at.strftime("%Y-%m-%dT%H:%M:%S"),  # real message time
+                    ))
+                    if len(batch) >= 200:
+                        await database.run(database.bulk_log_context_messages, batch, max_chars)
+                        batch = []
+                if batch:
+                    await database.run(database.bulk_log_context_messages, batch, max_chars)
+            except discord.Forbidden:
+                logger.debug("Backfill skipped channel %s (forbidden)", channel.id)
+            except Exception:
+                logger.warning("Backfill error in channel %s", channel.id, exc_info=True)
+            await asyncio.sleep(delay)
+
+        try:
+            after_count = await database.run(database.count_message_context, guild.id)
+        except Exception:
+            after_count = before_count
+        inserted = max(0, after_count - before_count)
+
+        logger.info(
+            "Fact-check backfill complete | guild=%s channels=%d seen=%d inserted=%d",
+            guild.id, channels_scanned, messages_seen, inserted,
+        )
+        try:
+            await database.run(
+                database.log_bulk_task, "factcheck_backfill", str(ctx.author), guild.id,
+                f"channels={channels_scanned} seen={messages_seen} inserted={inserted}",
+            )
+        except Exception:
+            logger.debug("Failed to log backfill to bulk_task_log", exc_info=True)
+        done = discord.Embed(
+            title="✅  Context refresh complete",
+            color=0x2ECC71,
+        )
+        done.add_field(name="Channels scanned", value=str(channels_scanned), inline=True)
+        done.add_field(name="Messages read", value=str(messages_seen), inline=True)
+        done.add_field(name="New rows stored", value=str(inserted), inline=True)
+        done.add_field(name="Store size", value=f"{after_count} msgs", inline=True)
+        try:
+            await status.edit(embed=done)
+        except Exception:
+            await ctx.send(embed=done)
 
 
 async def setup(bot: commands.Bot):
