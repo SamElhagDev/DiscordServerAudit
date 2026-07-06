@@ -100,6 +100,8 @@ class AdminBot(commands.Bot):
         self.scheduler = IntervalScheduler(self)
         self._start_time = time.monotonic()
         self._scheduler_started = False
+        # Write buffers registered by cogs; flushed on shutdown by close().
+        self._write_buffers = []
 
     async def setup_hook(self):
         database.init_db()
@@ -181,7 +183,56 @@ class AdminBot(commands.Bot):
                 coro_factory=lambda g=guild: self._run_server_audit(g),
             )
 
+        # Gateway latency log (observability only).
+        if config.get("performance.health.log_latency", True):
+            self.scheduler.register(
+                key="connection_health",
+                interval_hours=1,
+                coro_factory=self._log_connection_health,
+            )
+
         asyncio.create_task(self.scheduler.start())
+
+    async def _log_connection_health(self):
+        """Log gateway heartbeat latency so flapping is visible in logs."""
+        latency = self.latency  # seconds; nan/inf before first heartbeat
+        if latency is None or latency != latency or latency in (float("inf"), float("-inf")):
+            logger.warning("Connection health: gateway latency unavailable")
+            return
+        ms = latency * 1000
+        if ms > 1000:
+            logger.warning("Connection health: high gateway latency %.0f ms", ms)
+        else:
+            logger.info("Connection health: gateway latency %.0f ms", ms)
+
+    def register_write_buffer(self, buffer):
+        """Track a WriteBuffer for shutdown flushing."""
+        self._write_buffers.append(buffer)
+
+    def unregister_write_buffer(self, buffer):
+        """Stop tracking a WriteBuffer (on cog unload)."""
+        try:
+            self._write_buffers.remove(buffer)
+        except ValueError:
+            pass
+
+    async def _flush_write_buffers(self):
+        """Flush + stop every registered write buffer."""
+        if not self._write_buffers:
+            return
+        total = 0
+        for buffer in list(self._write_buffers):
+            try:
+                total += await buffer.stop()
+            except Exception:
+                logger.error(
+                    "Failed to flush write buffer %r during shutdown",
+                    getattr(buffer, "name", "?"), exc_info=True,
+                )
+        logger.info(
+            "Flushed %d buffered rows across %d write buffer(s) on shutdown",
+            total, len(self._write_buffers),
+        )
 
     async def on_error(self, event_method: str, *args, **kwargs):
         logger.error("Unhandled exception in event %r", event_method, exc_info=True)
@@ -274,7 +325,11 @@ class AdminBot(commands.Bot):
             await ctx.send("❌ An unexpected error occurred. The details have been logged.")
 
     async def close(self):
-        logger.info("Bot shutting down — closing orphaned voice sessions")
+        logger.info("Bot shutting down — flushing write buffers and closing orphaned voice sessions")
+        try:
+            await self._flush_write_buffers()
+        except Exception:
+            logger.error("Failed to flush write buffers during shutdown", exc_info=True)
         try:
             database.close_orphaned_voice_sessions()
         except Exception:

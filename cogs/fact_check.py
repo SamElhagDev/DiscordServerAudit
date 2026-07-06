@@ -16,6 +16,7 @@ import config
 import database
 from utils.gemini import get_client
 from utils.permissions import has_admin_role
+from utils.write_buffer import WriteBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,26 @@ class FactCheck(commands.Cog):
         self._user_limits: dict[int, list[float]] = {}   # user_id → [monotonic timestamps]
         self._session_check_count: int = 0
         self._context_insert_count: int = 0   # amortized prune counter
+        self._context_buffer = None  # message_context batch writer (if batching on)
+
+    async def cog_load(self):
+        if config.get("performance.batch_writes.enabled", True) and \
+                config.get("factcheck.context.enabled", True):
+            max_chars = config.get("factcheck.context.max_stored_chars", 2000)
+            self._context_buffer = WriteBuffer(
+                "message_context",
+                lambda rows: database.run(database.bulk_log_context_messages, rows, max_chars),
+                max_rows=config.get("performance.batch_writes.max_rows", 50),
+                max_interval=config.get("performance.batch_writes.max_interval_seconds", 2),
+            )
+            await self._context_buffer.start()
+            self.bot.register_write_buffer(self._context_buffer)
+
+    async def cog_unload(self):
+        if self._context_buffer is not None:
+            await self._context_buffer.stop()
+            self.bot.unregister_write_buffer(self._context_buffer)
+            self._context_buffer = None
 
     # ------------------------------------------------------------------
     # Helpers
@@ -230,7 +251,16 @@ class FactCheck(commands.Cog):
         return None
 
     async def _extract_content(self, message: discord.Message) -> ContentBundle:
-        """Gather all content from *message* into a ContentBundle."""
+        """Gather message content. Concurrent when fast_factcheck is on, else serial.
+
+        Both paths produce an identical ContentBundle.
+        """
+        if config.get("performance.fast_factcheck.enabled", True):
+            return await self._extract_content_concurrent(message)
+        return await self._extract_content_sequential(message)
+
+    async def _extract_content_sequential(self, message: discord.Message) -> ContentBundle:
+        """One-at-a-time content gathering (pre-006 behavior)."""
         max_images = config.get("factcheck.max_images", 4)
         images: list[tuple[bytes, str, str]] = []
 
@@ -299,6 +329,88 @@ class FactCheck(commands.Cog):
             reply_context=reply_context,
         )
 
+    async def _read_attachment_image(self, att, max_bytes):
+        """Read an image attachment. Returns (data, content_type, label) or None."""
+        try:
+            data = await att.read()
+            if len(data) <= max_bytes:
+                return (data, att.content_type or "", att.filename or "attachment")
+            logger.warning("Skipping oversized attachment: %d bytes", len(data))
+        except Exception:
+            logger.warning("Failed to read attachment %s", att.filename, exc_info=True)
+        return None
+
+    async def _download_labeled(self, session, url, label):
+        """Download an image and attach *label*. Returns (data, ct, label) or None."""
+        result = await self._download_image(session, url)
+        if result:
+            return (*result, label)
+        return None
+
+    async def _extract_content_concurrent(self, message: discord.Message) -> ContentBundle:
+        """Gather images + reply context concurrently, same output as the serial path.
+
+        Downloads are built in priority order (attachments -> stickers ->
+        thumbnails -> embeds), gathered, then the first ``max_images`` successes
+        are kept in order.
+        """
+        max_images = config.get("factcheck.max_images", 4)
+        max_bytes = config.get("factcheck.max_image_bytes", 10_485_760)
+
+        async with aiohttp.ClientSession() as session:
+            image_tasks = []
+
+            # 1. Image attachments (highest priority)
+            for att in message.attachments:
+                ct = att.content_type or ""
+                if ct.startswith("image/") and ct in _SUPPORTED_IMAGE_TYPES:
+                    image_tasks.append(self._read_attachment_image(att, max_bytes))
+
+            # 2. Stickers (PNG/APNG only)
+            for sticker in message.stickers:
+                if sticker.format in (
+                    discord.StickerFormatType.png,
+                    discord.StickerFormatType.apng,
+                ):
+                    image_tasks.append(
+                        self._download_labeled(session, str(sticker.url), sticker.name)
+                    )
+
+            # 3. Video thumbnails
+            for att in message.attachments:
+                ct = att.content_type or ""
+                if ct.startswith("video/") and att.proxy_url:
+                    label = f"{att.filename or 'video'} (thumbnail)"
+                    image_tasks.append(self._download_labeled(session, att.proxy_url, label))
+
+            # 4. Embed images / thumbnails (lowest priority)
+            for embed in message.embeds:
+                img_url = None
+                label = "embed image"
+                if embed.image and embed.image.url:
+                    img_url = embed.image.url
+                elif embed.thumbnail and embed.thumbnail.url:
+                    img_url = embed.thumbnail.url
+                    label = "embed thumbnail"
+                if img_url:
+                    image_tasks.append(self._download_labeled(session, img_url, label))
+
+            # Reply fetch runs alongside the downloads (not on the aiohttp session).
+            reply_task = asyncio.ensure_future(self._fetch_reply_context(message))
+            results = await asyncio.gather(*image_tasks) if image_tasks else []
+            reply_context = await reply_task
+
+        # gather() preserves order, so this is the first max_images successes.
+        images = [r for r in results if r is not None][:max_images]
+
+        embed_text = self._extract_embed_text(message.embeds)
+        return ContentBundle(
+            text=message.content or "",
+            images=images,
+            embed_text=embed_text,
+            reply_context=reply_context,
+        )
+
     # ------------------------------------------------------------------
     # Conversational context
     # ------------------------------------------------------------------
@@ -325,12 +437,20 @@ class FactCheck(commands.Cog):
             return
         try:
             max_chars = config.get("factcheck.context.max_stored_chars", 2000)
-            await database.run(
-                database.log_context_message,
-                message.guild.id, message.channel.id, message.id,
-                message.author.id, message.author.display_name,
-                message.content, max_chars,
-            )
+            if self._context_buffer is not None:
+                # recorded_at set now; the bulk helper truncates content.
+                self._context_buffer.enqueue((
+                    message.guild.id, message.channel.id, message.id,
+                    message.author.id, message.author.display_name,
+                    message.content, database._now(),
+                ))
+            else:
+                await database.run(
+                    database.log_context_message,
+                    message.guild.id, message.channel.id, message.id,
+                    message.author.id, message.author.display_name,
+                    message.content, max_chars,
+                )
             self._context_insert_count += 1
             if self._context_insert_count >= _PRUNE_EVERY:
                 self._context_insert_count = 0
@@ -376,7 +496,11 @@ class FactCheck(commands.Cog):
         return f"[#{name}]" if name else f"[channel {channel_id}]"
 
     async def _build_context_window(self, message: discord.Message) -> ContextWindow:
-        """Assemble the recency + relevance context window for a message."""
+        """Build the recency + relevance context window.
+
+        fast_factcheck fetches both tiers in one thread hop; otherwise two hops.
+        Both produce an identical window.
+        """
         if not config.get("factcheck.context.enabled", True):
             return ContextWindow()
 
@@ -384,46 +508,54 @@ class FactCheck(commands.Cog):
         channel_id = message.channel.id
         trigger_id = message.id
 
-        # --- Tier 1: recency ---
         recency_hours = config.get("factcheck.context.recency_window_hours", 168)
         same_limit = config.get("factcheck.context.same_channel_limit", 15)
         total_limit = config.get("factcheck.context.max_context_messages", 25)
         since_iso = _iso_hours_ago(recency_hours)
 
-        recency: list[ContextMessage] = []
-        seen_ids: set[int] = {trigger_id}
-        try:
-            rows = await database.run(
-                database.get_recent_context, guild_id, channel_id,
-                same_limit, total_limit, since_iso,
-            )
-        except Exception:
-            logger.warning("Recency context query failed | guild=%s", guild_id, exc_info=True)
-            rows = []
-        for r in rows:
-            mid = r["message_id"]
-            if mid in seen_ids:
-                continue
-            seen_ids.add(mid)
-            recency.append(ContextMessage(
-                author_name=r["author_name"], channel_id=r["channel_id"],
-                is_same_channel=(r["channel_id"] == channel_id),
-                content=r["content"], recorded_at=r["recorded_at"], source="recency",
-            ))
-            if len(recency) >= total_limit:
-                break
-        recency.sort(key=lambda m: m.recorded_at)  # oldest -> newest
-
-        # --- Tier 2: relevance (FTS5) ---
-        relevance: list[ContextMessage] = []
+        # Relevance params + query up-front so the fast path fetches both tiers
+        # together. query stays None unless relevance is on and FTS is available.
         rel_cfg = config.get("factcheck.context.history_relevance.enabled", True)
+        arch_max = config.get("factcheck.context.history_relevance.archive_max_messages", 10)
+        lookback = config.get("factcheck.context.history_relevance.lookback_days", 0)
+        min_score = config.get("factcheck.context.history_relevance.min_score", 0.0)
+        rel_since = _iso_days_ago(lookback) if lookback and lookback > 0 else None
+        query = None
         if rel_cfg and database.fts5_available():
             query = self._history_query_terms(message.content or "")
+
+        rec_rows: list = []
+        rel_rows: list = []
+        if config.get("performance.fast_factcheck.enabled", True):
+            # One thread hop: recency + relevance resolved together.
+            try:
+                rec_rows, rel_rows = await database.run(
+                    database.get_two_tier_context,
+                    guild_id, channel_id, same_limit, total_limit, since_iso,
+                    trigger_id, query, arch_max, rel_since, min_score,
+                )
+            except Exception:
+                logger.warning("Context query failed | guild=%s", guild_id, exc_info=True)
+        else:
+            # Pre-006 path: two separate thread hops.
+            try:
+                rows = await database.run(
+                    database.get_recent_context, guild_id, channel_id,
+                    same_limit, total_limit, since_iso,
+                )
+            except Exception:
+                logger.warning("Recency context query failed | guild=%s", guild_id, exc_info=True)
+                rows = []
+            seen_ids: set[int] = {trigger_id}
+            for r in rows:
+                mid = r["message_id"]
+                if mid in seen_ids:
+                    continue
+                seen_ids.add(mid)
+                rec_rows.append(r)
+                if len(rec_rows) >= total_limit:
+                    break
             if query:
-                arch_max = config.get("factcheck.context.history_relevance.archive_max_messages", 10)
-                lookback = config.get("factcheck.context.history_relevance.lookback_days", 0)
-                min_score = config.get("factcheck.context.history_relevance.min_score", 0.0)
-                rel_since = _iso_days_ago(lookback) if lookback and lookback > 0 else None
                 try:
                     rel_rows = await database.run(
                         database.get_relevant_history, guild_id, query,
@@ -432,12 +564,24 @@ class FactCheck(commands.Cog):
                 except Exception:
                     logger.warning("Relevance context query failed | guild=%s", guild_id, exc_info=True)
                     rel_rows = []
-                for r in rel_rows:
-                    relevance.append(ContextMessage(
-                        author_name=r["author_name"], channel_id=r["channel_id"],
-                        is_same_channel=(r["channel_id"] == channel_id),
-                        content=r["content"], recorded_at=r["recorded_at"], source="relevance",
-                    ))
+
+        recency = [
+            ContextMessage(
+                author_name=r["author_name"], channel_id=r["channel_id"],
+                is_same_channel=(r["channel_id"] == channel_id),
+                content=r["content"], recorded_at=r["recorded_at"], source="recency",
+            )
+            for r in rec_rows
+        ]
+        recency.sort(key=lambda m: m.recorded_at)  # oldest -> newest
+        relevance = [
+            ContextMessage(
+                author_name=r["author_name"], channel_id=r["channel_id"],
+                is_same_channel=(r["channel_id"] == channel_id),
+                content=r["content"], recorded_at=r["recorded_at"], source="relevance",
+            )
+            for r in rel_rows
+        ]
         return ContextWindow(recency=recency, relevance=relevance)
 
     def _format_context_block(self, window: ContextWindow) -> str:

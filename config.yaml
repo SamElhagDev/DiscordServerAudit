@@ -90,3 +90,23 @@ factcheck:
     # backfill (/factcheckrefresh)
     backfill_messages_per_channel: 0  # Max history messages pulled per channel
     backfill_channel_delay: 1    # Seconds between channels during backfill
+
+# Performance tuning. Each toggle falls back to pre-006 behavior when disabled.
+performance:
+  # Batch the two per-message DB writes (message_events + message_context)
+  # instead of writing one row at a time. Off = per-message writes.
+  batch_writes:
+    enabled: true
+    max_rows: 50             # Flush after this many pending rows...
+    max_interval_seconds: 2  # ...or this often, whichever comes first.
+    # Best-effort: a hard crash may drop up to one interval of pending rows
+    # (graceful shutdown always flushes). Set enabled:false for strict durability.
+
+  # Parallelize fact-check image/reply fetch + context queries. Same results,
+  # only faster local I/O — does not affect verdicts.
+  fast_factcheck:
+    enabled: true
+
+  # Log gateway latency hourly (observability only).
+  health:
+    log_latency: true

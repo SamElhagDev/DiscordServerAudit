@@ -10,6 +10,7 @@ from discord.ext import commands
 import config
 import database
 from utils.permissions import has_admin_role
+from utils.write_buffer import WriteBuffer
 
 try:
     import zoneinfo
@@ -265,10 +266,26 @@ class Stats(commands.Cog):
         self.bot = bot
         self._scanning = False
         self._scheduler_registered = False
+        self._events_buffer = None  # message_events batch writer (if batching on)
 
     async def cog_load(self):
         database.close_orphaned_voice_sessions()
+        if config.get("performance.batch_writes.enabled", True):
+            self._events_buffer = WriteBuffer(
+                "message_events",
+                lambda rows: database.run(database.bulk_log_message_events, rows),
+                max_rows=config.get("performance.batch_writes.max_rows", 50),
+                max_interval=config.get("performance.batch_writes.max_interval_seconds", 2),
+            )
+            await self._events_buffer.start()
+            self.bot.register_write_buffer(self._events_buffer)
         logger.info("Stats cog loaded — orphaned voice sessions closed")
+
+    async def cog_unload(self):
+        if self._events_buffer is not None:
+            await self._events_buffer.stop()
+            self.bot.unregister_write_buffer(self._events_buffer)
+            self._events_buffer = None
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -387,7 +404,13 @@ class Stats(commands.Cog):
             return
         try:
             word_count = len(message.content.split()) if message.content else 0
-            await database.run(database.log_message_event, message.guild.id, message.channel.id, message.author.id, word_count)
+            if self._events_buffer is not None:
+                # recorded_at is set now, not at flush time.
+                self._events_buffer.enqueue(
+                    (message.guild.id, message.channel.id, message.author.id, database._now(), word_count)
+                )
+            else:
+                await database.run(database.log_message_event, message.guild.id, message.channel.id, message.author.id, word_count)
         except Exception:
             logger.error("Failed to log message event: guild=%s channel=%s user=%s", message.guild.id, message.channel.id, message.author.id, exc_info=True)
 

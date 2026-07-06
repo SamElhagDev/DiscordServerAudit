@@ -792,6 +792,36 @@ def get_relevant_history(guild_id: int, match_query: str, limit: int,
     return out
 
 
+def get_two_tier_context(guild_id: int, channel_id: int, same_channel_limit: int,
+                         total_limit: int, since_iso: str, trigger_id: int,
+                         match_query: str | None, arch_max: int,
+                         rel_since: str | None, min_score: float):
+    """Recency + relevance fetch in one thread hop (vs. two separate calls).
+
+    Runs recency, derives the seen-id set (trigger + deduped/capped recency ids),
+    then runs relevance excluding those ids. Returns (recency_rows,
+    relevance_rows); recency_rows are deduped and capped to *total_limit* in fetch
+    order. Matches the original two-call path exactly.
+    """
+    rows = get_recent_context(guild_id, channel_id, same_channel_limit, total_limit, since_iso)
+    seen = {trigger_id}
+    recency_rows = []
+    for r in rows:
+        mid = r["message_id"]
+        if mid in seen:
+            continue
+        seen.add(mid)
+        recency_rows.append(r)
+        if len(recency_rows) >= total_limit:
+            break
+    relevance_rows = []
+    if match_query:
+        relevance_rows = get_relevant_history(
+            guild_id, match_query, arch_max, seen, rel_since, min_score,
+        )
+    return recency_rows, relevance_rows
+
+
 # ---------------------------------------------------------------------------
 # Stats: read helpers (called from stats commands)
 # ---------------------------------------------------------------------------

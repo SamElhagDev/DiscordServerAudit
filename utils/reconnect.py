@@ -20,17 +20,37 @@ def cap_reconnect_backoff(max_exp: int = 5) -> None:
     try:
         base_cls = discord.backoff.ExponentialBackoff
 
+        # The reconnect loop looks up ExponentialBackoff on discord.client. If a
+        # future refactor stops importing it there, patching would silently no-op,
+        # so require it to exist first (else fall back to stock backoff).
+        if not hasattr(discord.client, "ExponentialBackoff"):
+            raise RuntimeError(
+                "discord.client has no ExponentialBackoff to patch — "
+                "reconnect path may have changed"
+            )
+
         class _BoundedExponentialBackoff(base_cls):
             def __init__(self, base: int = 1, *, integral: bool = False):
                 super().__init__(base, integral=integral)
                 self._max = max_exp
 
-        # Verify the cap actually took effect before swapping it in.
-        if getattr(_BoundedExponentialBackoff(), "_max", None) != max_exp:
-            raise RuntimeError("backoff cap did not take effect")
+        # Verify the cap took effect: override present, and the exponent stays
+        # bounded after many delay() calls (base caps growth at self._max).
+        probe = _BoundedExponentialBackoff()
+        if getattr(probe, "_max", None) != max_exp:
+            raise RuntimeError("backoff cap attribute did not take effect")
+        for _ in range(max_exp + 20):
+            probe.delay()
+        if probe._exp > max_exp:
+            raise RuntimeError(
+                f"backoff exponent {probe._exp} exceeded cap {max_exp}"
+            )
 
         discord.client.ExponentialBackoff = _BoundedExponentialBackoff
-        logger.info("Reconnect backoff capped: max retry delay ≈ %ds", 2 ** max_exp)
+        logger.info(
+            "Reconnect backoff cap verified and active: max retry delay ≈ %ds "
+            "(exponent capped at %d)", 2 ** max_exp, max_exp,
+        )
     except Exception:
         logger.warning(
             "Could not cap reconnect backoff — discord.py internals may have "
