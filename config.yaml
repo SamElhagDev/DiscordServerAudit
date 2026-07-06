@@ -77,8 +77,6 @@ factcheck:
     storage_retention_days: 0      # Delete horizon. 0 = keep forever
     max_messages_per_channel: 0    # Per-channel row cap. 0 = unlimited
     max_stored_chars: 2000         # Truncate stored text to this length
-    excluded_channels: []          # Channel IDs never stored or used as context
-    excluded_users: []             # User IDs never stored or used as context
     # recency tier (query window, never deletes)
     recency_window_hours: 168      # What counts as "recent" (7 days)
     max_context_messages: 25       # Max recent messages injected per check
@@ -90,5 +88,5 @@ factcheck:
       archive_max_messages: 10     # Max relevance messages injected per check
       min_score: 0.0               # bm25 floor. 0 = no floor
     # backfill (/factcheckrefresh)
-    backfill_messages_per_channel: 1000  # Max history pulled per channel. 0 = unlimited
-    backfill_channel_delay: 0.5    # Seconds between channels during backfill
+    backfill_messages_per_channel: 0  # Max history messages pulled per channel
+    backfill_channel_delay: 1    # Seconds between channels during backfill

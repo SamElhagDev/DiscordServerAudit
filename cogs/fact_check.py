@@ -1018,25 +1018,57 @@ class FactCheck(commands.Cog):
             *guild.stage_channels,
             *guild.threads,
         ]
+        total_channels = len(scan_channels)
         channels_scanned = 0
+        channels_no_perm = 0
+        channels_excluded = 0
         messages_seen = 0
-        for channel in scan_channels:
-            if channel.id in excluded_channels:
-                continue
-            # A thread is excluded if its parent channel is excluded.
+        skipped_bot = 0
+        skipped_empty = 0
+        skipped_user = 0
+
+        last_progress = 0.0  # monotonic time of last status edit (0 = force first update)
+
+        async def _edit_progress(idx: int, current_name):
+            nonlocal last_progress
+            last_progress = time.monotonic()
+            desc = f"Scanning channel **{idx}/{total_channels}**"
+            if current_name:
+                desc += f" — #{current_name}"
+            desc += f"\nMessages stored so far: **{messages_seen:,}**"
+            try:
+                await status.edit(embed=discord.Embed(
+                    title="\U0001F504  Refreshing fact-check context…",
+                    description=desc,
+                    color=0x95A5A6,
+                ))
+            except Exception:
+                logger.debug("Progress edit failed", exc_info=True)
+
+        for idx, channel in enumerate(scan_channels, 1):
+            if time.monotonic() - last_progress >= 2.0:
+                await _edit_progress(idx, getattr(channel, "name", None))
             parent_id = getattr(channel, "parent_id", None)
-            if parent_id and parent_id in excluded_channels:
+            # A channel/thread is excluded directly or via its excluded parent.
+            if channel.id in excluded_channels or (parent_id and parent_id in excluded_channels):
+                channels_excluded += 1
                 continue
             perms = channel.permissions_for(guild.me)
             if not perms.read_message_history:
+                channels_no_perm += 1
                 continue
             channels_scanned += 1
             batch = []
             try:
                 async for msg in channel.history(limit=history_limit, after=after_dt):
-                    if msg.author.bot or not (msg.content or "").strip():
+                    if msg.author.bot:
+                        skipped_bot += 1
+                        continue
+                    if not (msg.content or "").strip():
+                        skipped_empty += 1
                         continue
                     if self._context_excluded(channel.id, msg.author.id):
+                        skipped_user += 1
                         continue
                     messages_seen += 1
                     batch.append((
@@ -1047,6 +1079,9 @@ class FactCheck(commands.Cog):
                     if len(batch) >= 200:
                         await database.run(database.bulk_log_context_messages, batch, max_chars)
                         batch = []
+                    # Live progress even within a large channel.
+                    if time.monotonic() - last_progress >= 2.0:
+                        await _edit_progress(idx, getattr(channel, "name", None))
                 if batch:
                     await database.run(database.bulk_log_context_messages, batch, max_chars)
             except discord.Forbidden:
@@ -1061,25 +1096,37 @@ class FactCheck(commands.Cog):
             after_count = before_count
         inserted = max(0, after_count - before_count)
 
+        total_channels = len(scan_channels)
         logger.info(
-            "Fact-check backfill complete | guild=%s channels=%d seen=%d inserted=%d",
-            guild.id, channels_scanned, messages_seen, inserted,
+            "Fact-check backfill complete | guild=%s channels=%d/%d no_perm=%d excluded=%d "
+            "stored=%d inserted=%d skipped(bot=%d empty=%d user=%d)",
+            guild.id, channels_scanned, total_channels, channels_no_perm, channels_excluded,
+            messages_seen, inserted, skipped_bot, skipped_empty, skipped_user,
         )
         try:
             await database.run(
                 database.log_bulk_task, "factcheck_backfill", str(ctx.author), guild.id,
-                f"channels={channels_scanned} seen={messages_seen} inserted={inserted}",
+                f"channels={channels_scanned}/{total_channels} inserted={inserted} "
+                f"stored={messages_seen} skipped_bot={skipped_bot} skipped_empty={skipped_empty}",
             )
         except Exception:
             logger.debug("Failed to log backfill to bulk_task_log", exc_info=True)
         done = discord.Embed(
             title="✅  Context refresh complete",
+            description=(
+                f"Scanned **{channels_scanned}/{total_channels}** channels "
+                f"({channels_no_perm} no read-history perm, {channels_excluded} excluded)."
+            ),
             color=0x2ECC71,
         )
-        done.add_field(name="Channels scanned", value=str(channels_scanned), inline=True)
-        done.add_field(name="Messages read", value=str(messages_seen), inline=True)
-        done.add_field(name="New rows stored", value=str(inserted), inline=True)
+        done.add_field(name="Stored (has text)", value=str(messages_seen), inline=True)
+        done.add_field(name="New rows", value=str(inserted), inline=True)
         done.add_field(name="Store size", value=f"{after_count} msgs", inline=True)
+        done.add_field(
+            name="Skipped",
+            value=f"{skipped_bot} bot · {skipped_empty} no-text (image/embed) · {skipped_user} excluded-user",
+            inline=False,
+        )
         try:
             await status.edit(embed=done)
         except Exception:
