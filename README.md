@@ -258,7 +258,7 @@ Fact-checking is triggered by reacting to any message with the configured emoji 
 
 - `storage_retention_days` is the sole delete horizon and defaults to **`0` = keep forever**. This retains all message text indefinitely (maximizes recall); set a finite number of days for a tighter privacy posture, or `0` to keep everything. It is independent of `recency_window_hours` (a query window that never deletes).
 - Set `excluded_channels` / `excluded_users` to keep private channels or specific users out of the context store entirely (applied to both live capture and backfill).
-- Run `/factcheckrefresh` after enabling context to seed the store from existing history (idempotent, admin-only, rate-limited; preserves each message's original timestamp).
+- Run `/factcheckrefresh` after enabling context to seed the store from existing history — it scans every messageable channel (text, voice/stage text chat, and active threads), idempotent, admin-only, rate-limited, and preserves each message's original timestamp.
 - The relevance tier requires SQLite FTS5; if unavailable it disables gracefully and the recency tier still works.
 
 All commands require the admin role configured in `config.yaml`.

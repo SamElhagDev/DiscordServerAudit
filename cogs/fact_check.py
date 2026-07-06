@@ -1011,10 +1011,21 @@ class FactCheck(commands.Cog):
             before_count = 0
 
         excluded_channels = config.get("factcheck.context.excluded_channels", [])
+        # Every messageable channel: text, voice/stage text chat, and active threads.
+        scan_channels = [
+            *guild.text_channels,
+            *guild.voice_channels,
+            *guild.stage_channels,
+            *guild.threads,
+        ]
         channels_scanned = 0
         messages_seen = 0
-        for channel in guild.text_channels:
+        for channel in scan_channels:
             if channel.id in excluded_channels:
+                continue
+            # A thread is excluded if its parent channel is excluded.
+            parent_id = getattr(channel, "parent_id", None)
+            if parent_id and parent_id in excluded_channels:
                 continue
             perms = channel.permissions_for(guild.me)
             if not perms.read_message_history:
