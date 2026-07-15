@@ -87,6 +87,23 @@ factcheck:
       lookback_days: 0             # How far back FTS reaches. 0 = all history
       archive_max_messages: 10     # Max relevance messages injected per check
       min_score: 0.0               # bm25 floor. 0 = no floor
+    # semantic tier (embedding-based retrieval, fused with FTS/bm25).
+    # Improves *which* messages fill the relevance slot; does NOT raise the caps above,
+    # so the fact-check prompt size (generative token cost) is unchanged. Embedding is a
+    # separate, cheaper meter. Set enabled: false to stop all embedding spend.
+    semantic:
+      enabled: true                # Master toggle for semantic retrieval (embeddings)
+      model: "gemini-embedding-001"  # Embedding model id
+      dimensions: 768              # Output dim (MRL-truncatable; change + re-embed to alter)
+      max_messages: 10             # Cap on semantic candidates before fusion
+      lookback_days: 0             # Query-only reach for semantic tier. 0 = all embedded history
+      min_similarity: 0.0          # Cosine floor. 0 = no floor
+      query_context_messages: 5    # Recent messages folded into the query embedding
+      fusion_k: 60                 # Reciprocal-rank-fusion constant
+      # reconciler (background embedding of pending rows; also drains backfill)
+      embed_batch_size: 100        # Rows embedded per Gemini batch call
+      embed_interval_seconds: 30   # Sweep cadence
+      max_pending_per_sweep: 500   # Upper bound on rows processed per sweep (backfill throttle)
     # backfill (/factcheckrefresh)
     backfill_messages_per_channel: 0  # Max history messages pulled per channel
     backfill_channel_delay: 1    # Seconds between channels during backfill

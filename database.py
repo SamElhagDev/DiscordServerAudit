@@ -106,6 +106,26 @@ def _init_message_context_fts():
     logger.debug("message_context FTS5 index + triggers ready")
 
 
+def _init_message_embeddings():
+    """Sidecar vector store for message_context + delete-sync trigger (feature 007)."""
+    with get_conn() as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS message_embeddings (
+                message_context_id INTEGER PRIMARY KEY,
+                model TEXT NOT NULL,
+                dim INTEGER NOT NULL,
+                vector BLOB NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TRIGGER IF NOT EXISTS message_context_ad_emb
+            AFTER DELETE ON message_context BEGIN
+                DELETE FROM message_embeddings WHERE message_context_id = old.id;
+            END;
+        """)
+    logger.debug("message_embeddings table + delete trigger ready")
+
+
 def init_db():
     logger.info("Initialising database at: %s", DB_PATH)
     try:
@@ -262,6 +282,7 @@ def init_db():
             """)
         logger.info("Database schema ready")
         _init_message_context_fts()
+        _init_message_embeddings()
         _run_migrations()
         logger.info("Database initialised successfully")
     except Exception:
@@ -820,6 +841,81 @@ def get_two_tier_context(guild_id: int, channel_id: int, same_channel_limit: int
             guild_id, match_query, arch_max, seen, rel_since, min_score,
         )
     return recency_rows, relevance_rows
+
+
+# ---------------------------------------------------------------------------
+# Fact-check: semantic embeddings (vector sidecar over message_context)
+# ---------------------------------------------------------------------------
+
+def get_pending_context_rows(limit: int) -> list:
+    """message_context rows with no embedding yet (oldest first), capped at *limit*."""
+    if not limit or limit <= 0:
+        return []
+    with get_conn() as conn:
+        return list(conn.execute(
+            "SELECT mc.id, mc.guild_id, mc.content "
+            "FROM message_context mc "
+            "LEFT JOIN message_embeddings me ON me.message_context_id = mc.id "
+            "WHERE me.message_context_id IS NULL AND TRIM(mc.content) <> '' "
+            "ORDER BY mc.id ASC LIMIT ?",
+            (limit,),
+        ).fetchall())
+
+
+def upsert_embeddings(rows: list) -> int:
+    """Insert/replace vectors. Each row: (message_context_id, model, dim, vector_blob).
+
+    created_at is stamped here; idempotent via INSERT OR REPLACE on the primary key.
+    """
+    if not rows:
+        return 0
+    now = _now()
+    prepared = [(mcid, model, dim, blob, now) for (mcid, model, dim, blob) in rows]
+    with get_conn() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO message_embeddings "
+            "(message_context_id, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?)",
+            prepared,
+        )
+    return len(prepared)
+
+
+def load_all_embeddings(model: str, dim: int) -> list:
+    """(message_context_id, vector_blob) rows for the active (model, dim) only."""
+    with get_conn() as conn:
+        return list(conn.execute(
+            "SELECT message_context_id, vector FROM message_embeddings "
+            "WHERE model = ? AND dim = ?",
+            (model, dim),
+        ).fetchall())
+
+
+def get_context_messages_by_ids(ids: list) -> list:
+    """message_context rows for the given row ids (order not guaranteed). [] if none."""
+    ids = [int(i) for i in ids]
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    with get_conn() as conn:
+        return list(conn.execute(
+            f"SELECT * FROM message_context WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall())
+
+
+def count_embeddings(guild_id: int | None = None) -> int:
+    """Number of stored vectors (optionally scoped to a guild)."""
+    with get_conn() as conn:
+        if guild_id is None:
+            row = conn.execute("SELECT COUNT(*) AS c FROM message_embeddings").fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM message_embeddings me "
+                "JOIN message_context mc ON mc.id = me.message_context_id "
+                "WHERE mc.guild_id = ?",
+                (guild_id,),
+            ).fetchone()
+    return row["c"] if row else 0
 
 
 # ---------------------------------------------------------------------------
