@@ -2,7 +2,7 @@
 
 Holds normalized float32 vectors keyed by ``message_context.id``. Search is a single NumPy
 matmul (cosine, since vectors are pre-normalized), so per-query cost is independent of history
-size at single-server scale. Decoupled from Discord and the database for isolated testing.
+size at single-server scale.
 """
 import logging
 import threading
@@ -67,25 +67,7 @@ class VectorIndex:
                 self._ids.extend(new_ids)
             return len(new_ids)
 
-    def remove(self, ids) -> None:
-        """Drop ids and rebuild the matrix (used when context rows are pruned)."""
-        drop = {int(i) for i in ids}
-        if not drop:
-            return
-        with self._lock:
-            kept_ids: list[int] = []
-            kept_rows: list[np.ndarray] = []
-            for i, mid in enumerate(self._ids):
-                if mid in drop:
-                    continue
-                kept_ids.append(mid)
-                kept_rows.append(self._matrix[i])
-            self._ids = kept_ids
-            self._matrix = (np.vstack(kept_rows).astype("<f4")
-                            if kept_rows else np.zeros((0, self._dim), dtype="<f4"))
-            self._pos = {mid: i for i, mid in enumerate(kept_ids)}
-
-    def search(self, query_vec, k: int, min_sim: float = 0.0, allowed_ids=None):
+    def search(self, query_vec, k: int, min_sim: float = 0.0):
         """Return up to k (id, cosine) desc for a normalized query vector. [] if empty/invalid."""
         if query_vec is None or k <= 0:
             return []
@@ -95,29 +77,19 @@ class VectorIndex:
             q = np.asarray(query_vec, dtype="<f4")
             if q.shape[0] != self._dim:
                 return []
-            ids = list(self._ids)
             sims = self._matrix @ q  # both normalized → cosine
-        allowed = None if allowed_ids is None else {int(i) for i in allowed_ids}
-        out = []
-        for idx in np.argsort(-sims):
-            sim = float(sims[idx])
-            if sim < min_sim:
-                break
-            mid = ids[idx]
-            if allowed is not None and mid not in allowed:
-                continue
-            out.append((mid, sim))
-            if len(out) >= k:
-                break
-        return out
+            # O(N) partition + O(k log k) sort; a full argsort would be O(N log N).
+            k = min(k, sims.shape[0])
+            top = np.argpartition(-sims, k - 1)[:k]
+            top = top[np.argsort(-sims[top])]
+            return [(self._ids[i], float(sims[i])) for i in top if sims[i] >= min_sim]
 
 
 def rrf_fuse(keyword_ids, semantic_ids, k: int = 60) -> list:
     """Reciprocal-rank fusion of two ranked id lists → a single fused id order (desc).
 
-    A doc at 1-based rank ``r`` in a list contributes ``1 / (k + r)``; scores sum across lists.
-    Rank-based, so it needs no score normalization between bm25 and cosine. If one list is
-    empty the output is simply the other list's order.
+    A doc at 1-based rank ``r`` contributes ``1 / (k + r)``; scores sum across lists. Being
+    rank-based, it needs no score normalization between bm25 and cosine.
     """
     scores: dict[int, float] = {}
     first_seen: dict[int, int] = {}

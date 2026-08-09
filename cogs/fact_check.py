@@ -20,8 +20,7 @@ from utils.write_buffer import WriteBuffer
 
 logger = logging.getLogger(__name__)
 
-# Semantic context retrieval (feature 007) — optional. If numpy or the helpers fail to
-# import, semantic retrieval is disabled and the bot falls back to recency + bm25.
+# Semantic context retrieval (feature 007) — optional; falls back to recency + bm25 on ImportError.
 try:
     import numpy as np
     from utils import embeddings
@@ -171,22 +170,26 @@ class FactCheck(commands.Cog):
                 and embeddings.embed_available()):
             return
         try:
-            model = config.get("factcheck.context.semantic.model", "gemini-embedding-001")
-            dim = int(config.get("factcheck.context.semantic.dimensions", 768))
-            index = VectorIndex(dim)
-            rows = await database.run(database.load_all_embeddings, model, dim)
-            index.load(
-                (r["message_context_id"], np.frombuffer(r["vector"], dtype="<f4"))
-                for r in rows
-            )
+            index = VectorIndex(embeddings.dimensions())
+            await self._load_index_vectors(index)
             self._vector_index = index
             self._reconciler_task = asyncio.create_task(self._embed_reconciler_loop())
             logger.info("Semantic context enabled | model=%s dim=%d preloaded=%d vectors",
-                        model, dim, len(index))
+                        embeddings.model_name(), index.dim, len(index))
         except Exception:
             logger.error("Failed to initialise semantic context — disabling", exc_info=True)
             self._vector_index = None
             self._reconciler_task = None
+
+    async def _load_index_vectors(self, index):
+        """(Re)fill *index* from stored vectors — shared by startup preload and post-prune resync."""
+        rows = await database.run(
+            database.load_all_embeddings, embeddings.model_name(), index.dim
+        )
+        index.load(
+            (r["message_context_id"], np.frombuffer(r["vector"], dtype="<f4"))
+            for r in rows
+        )
 
     async def _embed_reconciler_loop(self):
         """Periodically embed message_context rows lacking a vector (also drains backfill)."""
@@ -205,8 +208,8 @@ class FactCheck(commands.Cog):
 
     async def _embed_pending_once(self):
         """One sweep: embed pending rows in bounded batches, upsert vectors, update the index."""
-        model = config.get("factcheck.context.semantic.model", "gemini-embedding-001")
-        dim = int(config.get("factcheck.context.semantic.dimensions", 768))
+        model = embeddings.model_name()
+        dim = embeddings.dimensions()
         batch_size = config.get("factcheck.context.semantic.embed_batch_size", 100)
         max_per_sweep = config.get("factcheck.context.semantic.max_pending_per_sweep", 500)
         processed = 0
@@ -556,15 +559,27 @@ class FactCheck(commands.Cog):
             self._context_insert_count += 1
             if self._context_insert_count >= _PRUNE_EVERY:
                 self._context_insert_count = 0
-                retention = config.get("factcheck.context.storage_retention_days", 0)
-                max_per_ch = config.get("factcheck.context.max_messages_per_channel", 0)
-                if (retention and retention > 0) or (max_per_ch and max_per_ch > 0):
-                    await database.run(database.prune_message_context, retention, max_per_ch)
+                await self._prune_context_store()
         except Exception:
             logger.warning(
                 "Failed to store message context | guild=%s msg=%s",
                 message.guild.id, message.id, exc_info=True,
             )
+
+    async def _prune_context_store(self):
+        """Amortized prune of the context store, keeping the vector index in sync."""
+        retention = config.get("factcheck.context.storage_retention_days", 0)
+        max_per_ch = config.get("factcheck.context.max_messages_per_channel", 0)
+        if not ((retention and retention > 0) or (max_per_ch and max_per_ch > 0)):
+            return
+        deleted = await database.run(database.prune_message_context, retention, max_per_ch)
+        # The delete trigger clears stored vectors; the in-memory index needs an explicit resync
+        # or it keeps growing and pruned ids waste top-k slots.
+        if deleted and self._vector_index is not None:
+            try:
+                await self._load_index_vectors(self._vector_index)
+            except Exception:
+                logger.warning("Vector index resync after prune failed", exc_info=True)
 
     @staticmethod
     def _history_query_terms(text: str, max_terms: int = 12) -> str | None:
@@ -677,9 +692,9 @@ class FactCheck(commands.Cog):
         ]
         recency.sort(key=lambda m: m.recorded_at)  # oldest -> newest
 
-        # Semantic tier + hybrid fusion (feature 007): replace the bm25 relevance rows with
+        # Replace the bm25 relevance rows with an RRF fusion of bm25 + vector hits (feature 007).
+        # embed_available() covers the semantic.enabled toggle; any failure falls back to bm25.
         if (_SEMANTIC_OK and self._vector_index is not None
-                and config.get("factcheck.context.semantic.enabled", True)
                 and embeddings.embed_available()):
             try:
                 rel_rows = await self._fuse_relevance(
@@ -701,8 +716,8 @@ class FactCheck(commands.Cog):
     def _build_semantic_query(self, message: discord.Message, rec_rows: list) -> str | None:
         """Query text for semantic retrieval: reacted message + reply target + recent context.
 
-        Enriching beyond the reacted message's own words is what lets low-text triggers
-        (an image, a bare link, "is this true?") still retrieve relevant history.
+        The enrichment is what lets low-text triggers (an image, a bare link, "is this true?")
+        still retrieve relevant history.
         """
         parts: list[str] = []
         if message.content and message.content.strip():
@@ -723,10 +738,9 @@ class FactCheck(commands.Cog):
 
     async def _fuse_relevance(self, message: discord.Message, rec_rows: list,
                               bm25_rows: list, trigger_id: int, arch_max: int) -> list:
-        """Fuse bm25 relevance rows with semantic hits via RRF. Returns the fused relevance rows.
+        """Fuse bm25 relevance rows with semantic hits via RRF.
 
-        Falls back to *bm25_rows* whenever the query can't be embedded, the index is empty,
-        or no semantic hit survives dedup — so semantic is strictly additive.
+        Every failure path returns *bm25_rows* unchanged, so semantic is strictly additive.
         """
         query_text = self._build_semantic_query(message, rec_rows)
         qv = await embeddings.embed_query(query_text) if query_text else None
@@ -739,8 +753,7 @@ class FactCheck(commands.Cog):
             return bm25_rows
         sem_ids = [mid for mid, _ in hits]
         sem_rows = await database.run(database.get_context_messages_by_ids, sem_ids)
-        # Dedup semantic rows against the recency tier + trigger (by Discord message_id) and
-        # apply the semantic lookback window, if any.
+        # Dedup against the recency tier + trigger by Discord message_id, not row id.
         seen_msg_ids = {trigger_id} | {r["message_id"] for r in rec_rows}
         lookback = int(config.get("factcheck.context.semantic.lookback_days", 0))
         cutoff = _iso_days_ago(lookback) if lookback and lookback > 0 else None
@@ -1301,22 +1314,22 @@ class FactCheck(commands.Cog):
         )
 
         # Semantic retrieval status (feature 007)
-        sem_enabled = config.get("factcheck.context.semantic.enabled", True)
-        sem_model = config.get("factcheck.context.semantic.model", "gemini-embedding-001")
-        sem_dim = config.get("factcheck.context.semantic.dimensions", 768)
-        if not (_SEMANTIC_OK and embeddings is not None and embeddings.embed_available()):
+        if not (_SEMANTIC_OK and embeddings.embed_available()):
+            sem_enabled = config.get("factcheck.context.semantic.enabled", True)
             sem_val = "Off" if not sem_enabled else "unavailable (no key/deps)"
         else:
+            sem_desc = f"{embeddings.model_name()} d{embeddings.dimensions()}"
             try:
                 embedded = await database.run(database.count_embeddings, ctx.guild.id)
             except Exception:
+                logger.warning("Embedding count failed | guild=%s", ctx.guild.id, exc_info=True)
                 embedded = "?"
             if isinstance(embedded, int) and isinstance(store_size, int):
                 pending = max(store_size - embedded, 0)
-                sem_val = (f"On · {sem_model} d{sem_dim} · "
+                sem_val = (f"On · {sem_desc} · "
                            f"{embedded}/{store_size} embedded ({pending} pending)")
             else:
-                sem_val = f"On · {sem_model} d{sem_dim} · {embedded} embedded"
+                sem_val = f"On · {sem_desc} · {embedded} embedded"
         embed.add_field(name="Semantic retrieval", value=sem_val, inline=False)
 
         await ctx.send(embed=embed)

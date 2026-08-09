@@ -1,8 +1,7 @@
 """Gemini embedding helpers for fact-check semantic context retrieval.
 
-Thin, SDK-shape-agnostic wrapper over the shared client in ``utils.gemini``. Every call is
-gated on a configured client and returns ``None`` (never raises) on no-key/failure, so callers
-degrade gracefully to keyword + recency retrieval.
+Thin wrapper over the shared client in ``utils.gemini``. Every call returns ``None`` rather than
+raising on no-key/failure, so callers degrade to keyword + recency retrieval.
 """
 import logging
 
@@ -15,11 +14,13 @@ from utils.gemini import get_client
 logger = logging.getLogger(__name__)
 
 
-def _model() -> str:
+def model_name() -> str:
+    """Active embedding model. Stored vectors are keyed by it, so callers must not inline it."""
     return config.get("factcheck.context.semantic.model", "gemini-embedding-001")
 
 
-def _dim() -> int:
+def dimensions() -> int:
+    """Active vector width. Likewise keyed on — see model_name()."""
     return int(config.get("factcheck.context.semantic.dimensions", 768))
 
 
@@ -47,11 +48,11 @@ async def _embed(texts: list[str], task_type: str) -> list[np.ndarray] | None:
         return None
     try:
         resp = await client.aio.models.embed_content(
-            model=_model(),
+            model=model_name(),
             contents=texts,
             config=genai_types.EmbedContentConfig(
                 task_type=task_type,
-                output_dimensionality=_dim(),
+                output_dimensionality=dimensions(),
             ),
         )
     except Exception:

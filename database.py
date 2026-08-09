@@ -853,7 +853,7 @@ def get_pending_context_rows(limit: int) -> list:
         return []
     with get_conn() as conn:
         return list(conn.execute(
-            "SELECT mc.id, mc.guild_id, mc.content "
+            "SELECT mc.id, mc.content "
             "FROM message_context mc "
             "LEFT JOIN message_embeddings me ON me.message_context_id = mc.id "
             "WHERE me.message_context_id IS NULL AND TRIM(mc.content) <> '' "
