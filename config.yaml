@@ -93,17 +93,24 @@ factcheck:
     # separate, cheaper meter. Set enabled: false to stop all embedding spend.
     semantic:
       enabled: true                # Master toggle for semantic retrieval (embeddings)
-      model: "gemini-embedding-001"  # Embedding model id
-      dimensions: 768              # Output dim (MRL-truncatable; change + re-embed to alter)
+      model: "gemini-embedding-001"  # Embedding model id. Changing it re-embeds all history
+                                   #   in the background (old vectors become pending again).
+      dimensions: 768              # Output dim (MRL-truncatable). Changing it also triggers a
+                                   #   full background re-embed, same as changing the model.
       max_messages: 10             # Cap on semantic candidates before fusion
       lookback_days: 0             # Query-only reach for semantic tier. 0 = all embedded history
-      min_similarity: 0.0          # Cosine floor. 0 = no floor
+      min_similarity: 0.0          # Cosine floor, compared with >=. 0 keeps everything except
+                                   #   negatively-correlated hits; raise it to demand real overlap.
       query_context_messages: 5    # Recent messages folded into the query embedding
       fusion_k: 60                 # Reciprocal-rank-fusion constant
       # reconciler (background embedding of pending rows; also drains backfill)
       embed_batch_size: 100        # Rows embedded per Gemini batch call
       embed_interval_seconds: 30   # Sweep cadence
       max_pending_per_sweep: 500   # Upper bound on rows processed per sweep (backfill throttle)
+      embed_backoff_max_seconds: 900  # Ceiling on the sweep interval after consecutive embedding
+                                   #   failures. The interval doubles from embed_interval_seconds
+                                   #   up to this, then resets on the first success — so a bad key
+                                   #   or exhausted quota stops hammering the API.
     # backfill (/factcheckrefresh)
     backfill_messages_per_channel: 0  # Max history messages pulled per channel
     backfill_channel_delay: 1    # Seconds between channels during backfill

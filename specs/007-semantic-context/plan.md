@@ -21,7 +21,9 @@ recency + bm25 behavior when disabled or unavailable.
 
 ## Technical Context
 
-**Language/Version**: Python 3.11+
+**Language/Version**: Python 3.10 (the version CI installs and the deployed venv is built with;
+the codebase uses no 3.11+ syntax or stdlib, so this is the floor *and* the ceiling in practice —
+bump CI and the Scheduled Task venv together if that ever changes)
 **Primary Dependencies**: discord.py (`Intents.message_content`), `google-genai` (existing —
 `client.aio.models.embed_content` for embeddings + `genai.types.EmbedContentConfig`), `numpy`
 (new: vector math for the in-memory index + cosine), sqlite3 (stdlib), aiohttp.
@@ -30,9 +32,12 @@ to `message_context.id`, with `model` + `dim`), plus a delete trigger mirroring 
 `message_context_fts` sync pattern so vectors are removed when context rows are pruned. **No
 changes to `message_context` or existing tables.** Vectors are L2-normalized on store so cosine
 similarity is a single dot product.
-**Testing**: Manual Discord validation across {semantic on/off} × {context on/off}; paraphrase and
-low-text-trigger recall checks; backfill-progress check via `/factcheck` status; graceful
-degradation with no key / forced embedding failure; flake8 lint in CI.
+**Testing**: `python -m unittest discover -s tests` in CI (stdlib only — no test dependency to
+install) covering the vector index, RRF fusion, the write buffer, the backoff helper, and the
+context/embedding SQL against a temporary SQLite file. Plus manual Discord validation across
+{semantic on/off} × {context on/off}; paraphrase and low-text-trigger recall checks;
+backfill-progress check via `/factcheck` status; graceful degradation with no key / forced
+embedding failure; flake8 lint in CI.
 **Target Platform**: Windows (Scheduled Task deployment via GitHub Actions).
 **Project Type**: Discord bot (cog-modular).
 **Performance Goals**: Query-time similarity search is one NumPy matmul over the in-memory index

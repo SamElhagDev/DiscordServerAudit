@@ -14,6 +14,7 @@ from google.genai import types as genai_types
 
 import config
 import database
+from utils import backoff
 from utils.gemini import get_client
 from utils.permissions import has_admin_role
 from utils.write_buffer import WriteBuffer
@@ -134,6 +135,31 @@ class ContextWindow:
         return not self.recency and not self.relevance
 
 
+@dataclasses.dataclass(frozen=True)
+class SemanticSettings:
+    """``factcheck.context.semantic.*`` resolved once per fact-check.
+
+    The retrieval path read these one dotted lookup at a time, several times per check;
+    reading them together keeps the query code about retrieval rather than config plumbing.
+    """
+    max_messages: int
+    min_similarity: float
+    lookback_days: int
+    fusion_k: int
+    query_context_messages: int
+
+    @classmethod
+    def load(cls) -> "SemanticSettings":
+        prefix = "factcheck.context.semantic."
+        return cls(
+            max_messages=int(config.get(prefix + "max_messages", 10)),
+            min_similarity=float(config.get(prefix + "min_similarity", 0.0)),
+            lookback_days=int(config.get(prefix + "lookback_days", 0)),
+            fusion_k=int(config.get(prefix + "fusion_k", 60)),
+            query_context_messages=int(config.get(prefix + "query_context_messages", 5)),
+        )
+
+
 class FactCheck(commands.Cog):
     """React with an emoji to fact-check any message using AI."""
 
@@ -186,43 +212,69 @@ class FactCheck(commands.Cog):
         rows = await database.run(
             database.load_all_embeddings, embeddings.model_name(), index.dim
         )
-        index.load(
-            (r["message_context_id"], np.frombuffer(r["vector"], dtype="<f4"))
-            for r in rows
-        )
+
+        def _decode_and_load():
+            index.load(
+                (r["message_context_id"], np.frombuffer(r["vector"], dtype="<f4"))
+                for r in rows
+            )
+
+        # Decoding + stacking N vectors is a single O(N x dim) copy; at a large store that
+        # would visibly stall the event loop, so it runs in a worker thread like the query.
+        await asyncio.to_thread(_decode_and_load)
 
     async def _embed_reconciler_loop(self):
-        """Periodically embed message_context rows lacking a vector (also drains backfill)."""
+        """Periodically embed message_context rows lacking a vector (also drains backfill).
+
+        Consecutive failures back the sweep off exponentially so a revoked key or an
+        exhausted quota can't keep the loop calling a dead endpoint every interval.
+        """
         interval = config.get("factcheck.context.semantic.embed_interval_seconds", 30)
+        cap = config.get("factcheck.context.semantic.embed_backoff_max_seconds", 900)
+        failures = 0
         try:
             while True:
-                await asyncio.sleep(interval)
+                await asyncio.sleep(backoff.next_delay(interval, failures, cap=cap))
                 if self._vector_index is None or not embeddings.embed_available():
-                    continue
+                    continue  # disabled, not failing — keep the base cadence
                 try:
-                    await self._embed_pending_once()
+                    healthy = await self._embed_pending_once()
                 except Exception:
                     logger.warning("Embed reconciler sweep failed", exc_info=True)
+                    healthy = False
+                if healthy:
+                    failures = 0
+                    continue
+                failures += 1
+                logger.warning(
+                    "Embed reconciler backing off | consecutive_failures=%d next_sweep=%.0fs",
+                    failures, backoff.next_delay(interval, failures, cap=cap),
+                )
         except asyncio.CancelledError:
             raise
 
-    async def _embed_pending_once(self):
-        """One sweep: embed pending rows in bounded batches, upsert vectors, update the index."""
+    async def _embed_pending_once(self) -> bool:
+        """One sweep: embed pending rows in bounded batches, upsert vectors, update the index.
+
+        Returns False if an embedding call failed, so the caller can back off.
+        """
         model = embeddings.model_name()
         dim = embeddings.dimensions()
         batch_size = config.get("factcheck.context.semantic.embed_batch_size", 100)
         max_per_sweep = config.get("factcheck.context.semantic.max_pending_per_sweep", 500)
         processed = 0
+        healthy = True
         t0 = time.perf_counter()
         while processed < max_per_sweep:
             take = min(batch_size, max_per_sweep - processed)
-            rows = await database.run(database.get_pending_context_rows, take)
+            rows = await database.run(database.get_pending_context_rows, take, model, dim)
             if not rows:
                 break
             vectors = await embeddings.embed_documents([r["content"] or "" for r in rows])
             if vectors is None:
                 logger.warning("Embedding batch failed — %d rows stay pending for next sweep",
                                len(rows))
+                healthy = False
                 break
             upsert_rows = []
             index_pairs = []
@@ -239,6 +291,7 @@ class FactCheck(commands.Cog):
         if processed:
             logger.info("Embed reconciler: embedded %d rows | elapsed=%.2fs",
                         processed, time.perf_counter() - t0)
+        return healthy
 
     async def cog_unload(self):
         if self._reconciler_task is not None:
@@ -713,7 +766,8 @@ class FactCheck(commands.Cog):
         ]
         return ContextWindow(recency=recency, relevance=relevance)
 
-    def _build_semantic_query(self, message: discord.Message, rec_rows: list) -> str | None:
+    def _build_semantic_query(self, message: discord.Message, rec_rows: list,
+                              settings: SemanticSettings) -> str | None:
         """Query text for semantic retrieval: reacted message + reply target + recent context.
 
         The enrichment is what lets low-text triggers (an image, a bare link, "is this true?")
@@ -726,7 +780,7 @@ class FactCheck(commands.Cog):
         parent = getattr(ref, "resolved", None) if ref is not None else None
         if isinstance(parent, discord.Message) and parent.content and parent.content.strip():
             parts.append(parent.content.strip())
-        n = int(config.get("factcheck.context.semantic.query_context_messages", 5))
+        n = settings.query_context_messages
         if n > 0 and rec_rows:
             same = [r for r in rec_rows if r["channel_id"] == message.channel.id]
             for r in same[:n]:
@@ -742,20 +796,25 @@ class FactCheck(commands.Cog):
 
         Every failure path returns *bm25_rows* unchanged, so semantic is strictly additive.
         """
-        query_text = self._build_semantic_query(message, rec_rows)
+        settings = SemanticSettings.load()
+        query_text = self._build_semantic_query(message, rec_rows, settings)
         qv = await embeddings.embed_query(query_text) if query_text else None
         if qv is None:
             return bm25_rows
-        k = int(config.get("factcheck.context.semantic.max_messages", 10))
-        min_sim = float(config.get("factcheck.context.semantic.min_similarity", 0.0))
-        hits = self._vector_index.search(qv, k, min_sim)
+        hits = self._vector_index.search(qv, settings.max_messages, settings.min_similarity)
         if not hits:
             return bm25_rows
         sem_ids = [mid for mid, _ in hits]
-        sem_rows = await database.run(database.get_context_messages_by_ids, sem_ids)
+        # The index is global across guilds, so hydration must re-scope to this guild —
+        # otherwise another guild's messages land in this guild's prompt. (If this bot ever
+        # runs at real multi-guild scale, partition the index per guild instead of filtering
+        # after the fact, so cross-guild hits stop consuming top-k slots.)
+        sem_rows = await database.run(
+            database.get_context_messages_by_ids, sem_ids, message.guild.id,
+        )
         # Dedup against the recency tier + trigger by Discord message_id, not row id.
         seen_msg_ids = {trigger_id} | {r["message_id"] for r in rec_rows}
-        lookback = int(config.get("factcheck.context.semantic.lookback_days", 0))
+        lookback = settings.lookback_days
         cutoff = _iso_days_ago(lookback) if lookback and lookback > 0 else None
         sem_by_id = {}
         for r in sem_rows:
@@ -770,8 +829,7 @@ class FactCheck(commands.Cog):
         bm25_ordered = [r["id"] for r in bm25_rows]
         combined = {r["id"]: r for r in bm25_rows}
         combined.update(sem_by_id)
-        fusion_k = int(config.get("factcheck.context.semantic.fusion_k", 60))
-        fused_ids = rrf_fuse(bm25_ordered, sem_ordered, fusion_k)
+        fused_ids = rrf_fuse(bm25_ordered, sem_ordered, settings.fusion_k)
         fused_rows = [combined[i] for i in fused_ids if i in combined][:arch_max]
         logger.debug("Semantic fusion | bm25=%d sem=%d fused=%d",
                      len(bm25_ordered), len(sem_ordered), len(fused_rows))
@@ -1320,7 +1378,10 @@ class FactCheck(commands.Cog):
         else:
             sem_desc = f"{embeddings.model_name()} d{embeddings.dimensions()}"
             try:
-                embedded = await database.run(database.count_embeddings, ctx.guild.id)
+                embedded = await database.run(
+                    database.count_embeddings, ctx.guild.id,
+                    embeddings.model_name(), embeddings.dimensions(),
+                )
             except Exception:
                 logger.warning("Embedding count failed | guild=%s", ctx.guild.id, exc_info=True)
                 embedded = "?"
@@ -1452,6 +1513,15 @@ class FactCheck(commands.Cog):
         except Exception:
             after_count = before_count
         inserted = max(0, after_count - before_count)
+
+        # A backfill can blow straight past the configured retention/per-channel caps, but the
+        # amortized prune only counts live on_message inserts — so run one explicitly here.
+        # Done after `inserted` is computed so pruned rows don't understate what was stored.
+        try:
+            await self._prune_context_store()
+            after_count = await database.run(database.count_message_context, guild.id)
+        except Exception:
+            logger.warning("Post-backfill prune failed | guild=%s", guild.id, exc_info=True)
 
         total_channels = len(scan_channels)
         logger.info(

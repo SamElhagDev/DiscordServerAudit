@@ -5,10 +5,13 @@ import yaml
 logger = logging.getLogger(__name__)
 _config = None
 
+DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
 
-def load_config(path: str = "config.yaml") -> dict:
+
+def load_config(path: str | None = None) -> dict:
     global _config
     if _config is None:
+        path = path or DEFAULT_CONFIG_PATH
         if os.path.exists(path):
             with open(path, "r") as f:
                 _config = yaml.safe_load(f) or {}

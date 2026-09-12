@@ -47,13 +47,13 @@ class IntervalScheduler:
         while True:
             now = datetime.datetime.now(datetime.timezone.utc)
             for task in self._tasks:
-                last_run = database.get_last_run(task["key"])
+                last_run = await database.run(database.get_last_run, task["key"])
                 due = last_run is None or (now - last_run) >= task["interval"]
                 if due:
                     logger.info(f"Running scheduled task: {task['key']}")
                     try:
                         await task["coro_factory"]()
-                        database.set_last_run(task["key"])
+                        await database.run(database.set_last_run, task["key"])
                     except Exception as e:
                         logger.error(f"Scheduled task {task['key']} failed: {e}", exc_info=True)
 

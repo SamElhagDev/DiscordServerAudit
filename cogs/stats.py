@@ -1,9 +1,6 @@
-import json
 import logging
-import urllib.parse
 import datetime
 
-import aiohttp
 import discord
 from discord.ext import commands
 
@@ -11,248 +8,48 @@ import config
 import database
 from utils.permissions import has_admin_role
 from utils.write_buffer import WriteBuffer
+from utils.stats_embeds import (
+    CHART_GRID,
+    CHART_TEXT,
+    COLOR_GEMINI,
+    COLOR_NEGATIVE,
+    COLOR_NEUTRAL,
+    COLOR_POSITIVE,
+    COLOR_VOICE,
+    EASTERN,
+    build_bar_chart,
+    build_heatmap_bar,
+    chart_url,
+    composite_health_score,
+    count_online_members,
+    day_name,
+    embed_color_for_trend,
+    et_offset,
+    format_duration,
+    format_seconds,
+    health_label,
+    sparkline,
+    trend_indicator,
+    utc_hour_to_et,
+    weekday_weekend_label,
+)
 
-try:
-    import zoneinfo
-    _ET = zoneinfo.ZoneInfo("America/New_York")
-except Exception:
-    _ET = None
-
-
-def _et_offset() -> tuple[int, str]:
-    """Return (utc_offset_hours, abbreviation) for Eastern Time right now.
-    Used as fallback when tzdata is not installed."""
-    now = datetime.datetime.now(datetime.timezone.utc)
-    year = now.year
-    # DST starts 2nd Sunday in March at 07:00 UTC (= 02:00 EST)
-    mar1 = datetime.date(year, 3, 1)
-    first_sun_mar = mar1 + datetime.timedelta(days=(6 - mar1.weekday()) % 7)
-    dst_start = datetime.datetime(year, 3, first_sun_mar.day + 7, 7, 0, 0, tzinfo=datetime.timezone.utc)
-    # DST ends 1st Sunday in November at 06:00 UTC (= 02:00 EDT)
-    nov1 = datetime.date(year, 11, 1)
-    first_sun_nov = nov1 + datetime.timedelta(days=(6 - nov1.weekday()) % 7)
-    dst_end = datetime.datetime(year, 11, first_sun_nov.day, 6, 0, 0, tzinfo=datetime.timezone.utc)
-    if dst_start <= now < dst_end:
-        return -4, "EDT"
-    return -5, "EST"
-
-
-def _utc_hour_to_et(hour: int) -> str:
-    """Convert a UTC hour (0-23) to an ET display string, e.g. '09:00 EDT'."""
-    if _ET is not None:
-        today = datetime.date.today()
-        utc_dt = datetime.datetime(today.year, today.month, today.day, hour, 0, 0,
-                                   tzinfo=datetime.timezone.utc)
-        et_dt = utc_dt.astimezone(_ET)
-        offset_h = int(et_dt.utcoffset().total_seconds() // 3600)
-        abbr = "EST" if offset_h == -5 else "EDT"
-        return f"{et_dt.hour:02d}:00 {abbr}"
-    offset, abbr = _et_offset()
-    return f"{(hour + offset) % 24:02d}:00 {abbr}"
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Visual constants
 # ---------------------------------------------------------------------------
-COLOR_POSITIVE = 0x2ECC71
-COLOR_NEUTRAL = 0x3498DB
-COLOR_NEGATIVE = 0xE74C3C
-COLOR_VOICE = 0x9B59B6
-COLOR_GEMINI = 0xF39C12
-
-CHART_BG = "rgb(47,49,54)"
-CHART_TEXT = "rgb(255,255,255)"
-CHART_GRID = "rgba(255,255,255,0.1)"
 
 
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
 
-def _build_bar_chart(items: list[tuple], max_width: int = 12, show_pct: bool = False) -> str:
-    if not items:
-        return "```\nNo data\n```"
-    max_val = max(v for _, v in items)
-    total = sum(v for _, v in items) if show_pct else 0
-    lines = []
-    max_label = 12
-    for i, (label, value) in enumerate(items):
-        bar_len = int((value / max_val) * max_width) if max_val else 0
-        bar = "█" * bar_len + "░" * (max_width - bar_len)
-        name = str(label)[:max_label]
-        if show_pct and total:
-            pct = value * 100 // total
-            lines.append(f"{name:<{max_label}} {bar} {pct:>2}%")
-        else:
-            lines.append(f"{name:<{max_label}} {bar} {value:,}")
-    return "```\n" + "\n".join(lines) + "\n```"
-
-
-def _build_quickchart_url(chart_config: dict) -> str:
-    cfg = json.dumps(chart_config, separators=(",", ":"))
-    encoded = urllib.parse.quote(cfg, safe="")
-    return f"https://quickchart.io/chart?c={encoded}&w=500&h=300&bkg={urllib.parse.quote(CHART_BG)}"
-
-
-async def _chart_url(chart_config: dict) -> str:
-    url = _build_quickchart_url(chart_config)
-    if len(url) <= 2048:
-        return url
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://quickchart.io/chart/create",
-                json={"chart": chart_config, "width": 500, "height": 300, "backgroundColor": CHART_BG},
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("url", "")
-    except Exception:
-        logger.warning("Failed to create short chart URL", exc_info=True)
-    return url
-
-
-def _trend_indicator(current: float, previous: float) -> str:
-    if previous == 0:
-        return "\U0001f4c8 ↑ new" if current > 0 else "➡️ ─ 0%"
-    pct = ((current - previous) / previous) * 100
-    if pct > 0:
-        return f"\U0001f4c8 ↑ {pct:.1f}%"
-    elif pct < 0:
-        return f"\U0001f4c9 ↓ {abs(pct):.1f}%"
-    return "➡️ ─ 0%"
-
-
-def _format_duration(minutes: int) -> str:
-    if minutes <= 0:
-        return "—"
-    if minutes >= 60:
-        h, m = divmod(minutes, 60)
-        return f"{h}h {m}m" if m else f"{h}h"
-    return f"{minutes}m"
-
-
-def _format_seconds(seconds: int) -> str:
-    return _format_duration(seconds // 60)
-
-
-def _embed_color_for_trend(current: float, previous: float) -> int:
-    if current > previous:
-        return COLOR_POSITIVE
-    elif current < previous:
-        return COLOR_NEGATIVE
-    return COLOR_NEUTRAL
-
-
-def _sparkline(values: list[int], width: int = 14) -> str:
-    if not values:
-        return ""
-    bars = "▁▂▃▄▅▆▇█"
-    mn, mx = min(values), max(values)
-    rng = mx - mn if mx != mn else 1
-    recent = values[-width:]
-    return "".join(bars[min(int((v - mn) / rng * 7), 7)] for v in recent)
-
 
 # ---------------------------------------------------------------------------
 # Expanded-stats utility functions
 # ---------------------------------------------------------------------------
-
-def _gini_coefficient(values: list[int]) -> float:
-    """Compute Gini coefficient for a distribution. 0 = perfectly equal, 1 = maximally unequal."""
-    if not values or all(v == 0 for v in values):
-        return 0.0
-    sorted_vals = sorted(values)
-    n = len(sorted_vals)
-    cumulative = sum((2 * (i + 1) - n - 1) * v for i, v in enumerate(sorted_vals))
-    return cumulative / (n * sum(sorted_vals)) if sum(sorted_vals) else 0.0
-
-
-def _composite_health_score(metrics: dict) -> int:
-    """Compute server health score 0-100 from five 0-20 components.
-
-    Expected keys in *metrics*:
-      dau_mau      – float 0-1 (DAU/MAU ratio)
-      reaction_per_msg – float (reactions per message)
-      churn_rate   – float 0-1
-      voice_rate   – float 0-1 (voice participants / total members)
-      net_growth   – int  (net member change)
-    """
-    # 1. Activity: DAU/MAU ratio × 20
-    activity = min(20, metrics.get("dau_mau", 0) * 20)
-    # 2. Engagement: reactions per message, normalised (0.5 = max)
-    rpm = metrics.get("reaction_per_msg", 0)
-    engagement = min(20, (rpm / 0.5) * 20)
-    # 3. Retention: (1 - churn_rate) × 20
-    retention = min(20, (1 - metrics.get("churn_rate", 0)) * 20)
-    # 4. Voice participation × 20
-    voice = min(20, metrics.get("voice_rate", 0) * 20)
-    # 5. Growth direction
-    net = metrics.get("net_growth", 0)
-    growth = 20 if net > 0 else (10 if net == 0 else 5)
-
-    return int(round(activity + engagement + retention + voice + growth))
-
-
-def _health_label(score: int) -> str:
-    """Return a human-readable label for a health score 0-100."""
-    if score <= 20:
-        return "Critical"
-    if score <= 40:
-        return "Needs Attention"
-    if score <= 60:
-        return "Average"
-    if score <= 80:
-        return "Healthy"
-    return "Thriving"
-
-
-def _weekday_weekend_label(weekday: int, weekend: int) -> str:
-    """Format a weekday/weekend split as 'X% / Y%', or 'N/A' if no data."""
-    total = weekday + weekend
-    if total == 0:
-        return "N/A"
-    return f"{weekday * 100 // total}% / {weekend * 100 // total}%"
-
-
-def _day_name(day_num: int) -> str:
-    """Map SQLite strftime('%w') integer to abbreviated day name.
-
-    strftime('%w') returns 0 = Sunday … 6 = Saturday.
-    """
-    return ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")[day_num % 7]
-
-
-def _build_heatmap_bar(hours_data: list, width: int = 24, offset: int = 0) -> str:
-    """Build a 24-char heatmap bar from hourly data using block characters.
-
-    *hours_data* is a list of dicts with 'hour' (0-23) and 'count' keys.
-    *offset* rotates the bar so position 0 represents local hour 0
-    (pass ``_et_offset()[0]`` to convert UTC → ET).
-    Returns a string like '░░░░░░▁▂▃▅▆██████▇▆▅▃▂▁░'.
-    """
-    blocks = "░▁▂▃▄▅▆▇█"
-    counts = [0] * 24
-    for entry in hours_data:
-        h = entry.get("hour", 0)
-        if 0 <= h < 24:
-            counts[h] = entry.get("count", 0)
-    mx = max(counts) if counts else 0
-    if mx == 0:
-        return "░" * width
-    return "".join(blocks[min(int(counts[(h - offset) % 24] / mx * 8), 8)] for h in range(width))
-
-
-def _online_count(guild, bot) -> int | None:
-    """Number of non-offline members, or None if the presences intent is disabled.
-
-    Without that privileged intent every member reports as offline, so a raw count
-    would be a misleading 0. Callers should show "N/A" when this returns None.
-    """
-    if not bot.intents.presences:
-        return None
-    return sum(1 for m in guild.members if m.status != discord.Status.offline)
 
 
 # ---------------------------------------------------------------------------
@@ -539,7 +336,7 @@ class Stats(commands.Cog):
         voice_hours = summary["voice_seconds"] / 3600
         half_days = days // 2
         prev_summary = database.get_server_stats_summary(ctx.guild.id, half_days) if half_days > 0 else {"messages": 0}
-        trend = _trend_indicator(summary["messages"], prev_summary["messages"])
+        trend = trend_indicator(summary["messages"], prev_summary["messages"])
 
         # Fetch expanded metrics
         word_stats = database.get_server_word_stats(ctx.guild.id, days)
@@ -550,7 +347,7 @@ class Stats(commands.Cog):
         growth_trends = database.get_channel_growth_trends(ctx.guild.id, days)
 
         msgs_per_day = summary["messages"] / max(days, 1)
-        wk_pct = _weekday_weekend_label(wk_split["weekday_msgs"], wk_split["weekend_msgs"])
+        wk_pct = weekday_weekend_label(wk_split["weekday_msgs"], wk_split["weekend_msgs"])
 
         # Embed 1: Overview (enhanced)
         e1 = discord.Embed(
@@ -577,7 +374,7 @@ class Stats(commands.Cog):
             member = ctx.guild.get_member(row["user_id"])
             name = member.display_name if member else f"User {row['user_id']}"
             user_items.append((name, row["total"]))
-        e2 = discord.Embed(title="\U0001f3c6 Most Active Users", description=_build_bar_chart(user_items), color=COLOR_NEUTRAL)
+        e2 = discord.Embed(title="\U0001f3c6 Most Active Users", description=build_bar_chart(user_items), color=COLOR_NEUTRAL)
 
         # Embed 3: Top Channels
         chan_items = []
@@ -585,7 +382,7 @@ class Stats(commands.Cog):
             ch = ctx.guild.get_channel(row["channel_id"])
             name = f"#{ch.name}" if ch else f"#{row['channel_id']}"
             chan_items.append((name, row["total"]))
-        e3 = discord.Embed(title="\U0001f4cc Most Active Channels", description=_build_bar_chart(chan_items), color=COLOR_NEUTRAL)
+        e3 = discord.Embed(title="\U0001f4cc Most Active Channels", description=build_bar_chart(chan_items), color=COLOR_NEUTRAL)
 
         # Embed 4: Activity Chart
         dates = [r["date"][-5:] for r in daily]
@@ -612,14 +409,14 @@ class Stats(commands.Cog):
             },
         }
         e4 = discord.Embed(title="\U0001f4c8 Daily Activity", color=COLOR_NEUTRAL)
-        e4.set_image(url=await _chart_url(chart_cfg))
+        e4.set_image(url=await chart_url(chart_cfg))
 
         # Embed 5: Server Health
         dau_mau_ratio = dau_wau_mau["dau_mau"]
         dau_mau_label = "healthy" if dau_mau_ratio >= 0.2 else "low"
         gini = diversity["gini"]
         gini_label = "well distributed" if gini < 0.5 else ("moderate" if gini < 0.7 else "concentrated")
-        vel_trend = _trend_indicator(velocity["current_rate"], velocity["prior_rate"])
+        vel_trend = trend_indicator(velocity["current_rate"], velocity["prior_rate"])
 
         e5 = discord.Embed(title="\U0001f3e5 Server Health Snapshot", color=COLOR_NEUTRAL)
         e5.add_field(
@@ -701,7 +498,7 @@ class Stats(commands.Cog):
         avg_msgs = data["message_count"] / actual_span
         half = days // 2
         prev = database.get_user_stats(ctx.guild.id, member.id, half) if half > 0 else {"message_count": 0}
-        color = _embed_color_for_trend(data["message_count"], prev["message_count"])
+        color = embed_color_for_trend(data["message_count"], prev["message_count"])
 
         top_ch = ctx.guild.get_channel(data["top_channel_id"]) if data["top_channel_id"] else None
         top_ch_name = f"#{top_ch.name}" if top_ch else "N/A"
@@ -734,13 +531,13 @@ class Stats(commands.Cog):
         )
         e1.set_thumbnail(url=member.display_avatar.url)
         e1.add_field(name="\U0001f4ac Messages Sent", value=f"{data['message_count']:,}", inline=True)
-        e1.add_field(name="\U0001f3a4 Voice Time", value=_format_duration(data["voice_minutes"]), inline=True)
+        e1.add_field(name="\U0001f3a4 Voice Time", value=format_duration(data["voice_minutes"]), inline=True)
         e1.add_field(name="\U0001f504 Reactions Given", value=f"{data['reactions_given']:,}", inline=True)
         e1.add_field(name="\U0001f4cc Top Channel", value=top_ch_name, inline=True)
         e1.add_field(name="\U0001f4c5 Daily Average", value=f"{avg_msgs:.1f} msgs/day", inline=True)
-        e1.add_field(name="\U0001f4c8 Trend", value=_trend_indicator(data["message_count"], prev["message_count"]), inline=True)
+        e1.add_field(name="\U0001f4c8 Trend", value=trend_indicator(data["message_count"], prev["message_count"]), inline=True)
         e1.add_field(name="\U0001f504 Reactions Received", value=f"{data['reactions_received']:,}", inline=True)
-        e1.add_field(name="⏱️ Avg Voice Session", value=_format_duration(avg_session), inline=True)
+        e1.add_field(name="⏱️ Avg Voice Session", value=format_duration(avg_session), inline=True)
         e1.add_field(name="\U0001f4dd Avg Msg Length", value=f"{u_words['avg_words']:.1f} words", inline=True)
         e1.add_field(name="\U0001f3c6 Server Rank", value=f"#{u_rank['msg_rank']} of {u_rank['total_users']}", inline=True)
         e1.set_footer(text=data_range_note)
@@ -748,7 +545,7 @@ class Stats(commands.Cog):
         # Embed 2: Sparkline + chart — use zero-filled series so gaps show as 0 bars
         chart_dates = all_dates[-14:]
         vals = full_daily_msgs[-14:]
-        spark = _sparkline(full_daily_msgs)
+        spark = sparkline(full_daily_msgs)
         peak_val = max(full_daily_msgs) if full_daily_msgs else 0
         quiet_val = min(d for d in full_daily_msgs if d > 0) if any(full_daily_msgs) else 0
         desc = f"```\n{spark}\nAvg:{avg_msgs:.1f}  Hi:{peak_val}  Lo:{quiet_val}\n```"
@@ -760,7 +557,7 @@ class Stats(commands.Cog):
             "options": {"legend": {"labels": {"fontColor": CHART_TEXT}}, "scales": {"yAxes": [{"ticks": {"fontColor": CHART_TEXT, "beginAtZero": True}, "gridLines": {"color": CHART_GRID}}], "xAxes": [{"ticks": {"fontColor": CHART_TEXT}, "gridLines": {"color": CHART_GRID}}]}},
         }
         e2 = discord.Embed(title="\U0001f4c8 Daily Activity", description=desc, color=color)
-        e2.set_image(url=await _chart_url(chart_cfg))
+        e2.set_image(url=await chart_url(chart_cfg))
 
         # Embed 3: Channel breakdown
         chan_items = []
@@ -774,14 +571,14 @@ class Stats(commands.Cog):
                 other_count += count
         if other_count > 0:
             chan_items.append(("other", other_count))
-        e3 = discord.Embed(title="\U0001f4cc Channel Activity", description=_build_bar_chart(chan_items, show_pct=True), color=color)
+        e3 = discord.Embed(title="\U0001f4cc Channel Activity", description=build_bar_chart(chan_items, show_pct=True), color=color)
 
         # Embed 4: Activity Profile
         # Determine most active hour
         peak_hour_entry = max(u_hours, key=lambda h: h["count"]) if u_hours else {"hour": 0, "count": 0}
-        peak_hour_str = _utc_hour_to_et(peak_hour_entry["hour"]) if peak_hour_entry["count"] > 0 else "N/A"
+        peak_hour_str = utc_hour_to_et(peak_hour_entry["hour"]) if peak_hour_entry["count"] > 0 else "N/A"
 
-        u_wk_pct = _weekday_weekend_label(u_wk["weekday"], u_wk["weekend"])
+        u_wk_pct = weekday_weekend_label(u_wk["weekday"], u_wk["weekend"])
 
         # Dormancy
         dorm_days = u_dormancy["days_since_last"]
@@ -798,8 +595,8 @@ class Stats(commands.Cog):
         e4.add_field(name="\U0001f4c8 Active Day %", value=f"{active_pct:.0f}% of days since join", inline=True)
 
         # Hourly heatmap bar (converted to ET)
-        _off, _abbr = _et_offset()
-        heatmap = _build_heatmap_bar(u_hours, offset=_off)
+        _off, _abbr = et_offset()
+        heatmap = build_heatmap_bar(u_hours, offset=_off)
         e4.add_field(
             name=f"⏰ Hourly Activity ({_abbr})",
             value=f"```\n{heatmap}\n0     6    12    18   23\n```",
@@ -827,8 +624,8 @@ class Stats(commands.Cog):
         avg_msgs = data["message_count"] / days if days else 0
         half = days // 2
         prev = database.get_channel_stats(ctx.guild.id, channel.id, half) if half > 0 else {"message_count": 0}
-        color = _embed_color_for_trend(data["message_count"], prev["message_count"])
-        peak_hour = _utc_hour_to_et(data["peak_hour"]) if data["peak_hour"] is not None else "N/A"
+        color = embed_color_for_trend(data["message_count"], prev["message_count"])
+        peak_hour = utc_hour_to_et(data["peak_hour"]) if data["peak_hour"] is not None else "N/A"
 
         daily_msgs = [d.get("message_count", 0) for d in data["daily"]]
         busiest_day = "N/A"
@@ -860,7 +657,7 @@ class Stats(commands.Cog):
         e1.add_field(name="\U0001f465 Unique Users", value=str(data["unique_users"]), inline=True)
         e1.add_field(name="\U0001f4c5 Daily Average", value=f"{avg_msgs:.1f} msgs/day", inline=True)
         e1.add_field(name="\U0001f550 Peak Hour", value=peak_hour, inline=True)
-        e1.add_field(name="\U0001f4c8 Trend", value=_trend_indicator(data["message_count"], prev["message_count"]), inline=True)
+        e1.add_field(name="\U0001f4c8 Trend", value=trend_indicator(data["message_count"], prev["message_count"]), inline=True)
         e1.add_field(name="\U0001f525 Busiest Day", value=busiest_day, inline=True)
         e1.add_field(name="\U0001f4dd Avg Words/Msg", value=f"{ch_words['avg_words']:.1f} words", inline=True)
         e1.add_field(name="\U0001f4ac Msgs/User", value=f"{ch_density['msgs_per_user']:.1f} msgs/user", inline=True)
@@ -876,7 +673,7 @@ class Stats(commands.Cog):
                 user_items.append((name, count))
             else:
                 remaining += count
-        e2 = discord.Embed(title="\U0001f3c6 Top Contributors", description=_build_bar_chart(user_items, show_pct=True), color=color)
+        e2 = discord.Embed(title="\U0001f3c6 Top Contributors", description=build_bar_chart(user_items, show_pct=True), color=color)
         if remaining > 0:
             others = len(data["top_users"]) - 5
             e2.set_footer(text=f"{others} other user(s) contributed {remaining:,} messages")
@@ -890,22 +687,22 @@ class Stats(commands.Cog):
             "options": {"legend": {"labels": {"fontColor": CHART_TEXT}}, "scales": {"yAxes": [{"ticks": {"fontColor": CHART_TEXT, "beginAtZero": True}, "gridLines": {"color": CHART_GRID}}], "xAxes": [{"ticks": {"fontColor": CHART_TEXT}, "gridLines": {"color": CHART_GRID}}]}},
         }
         e3 = discord.Embed(title="\U0001f4c8 Daily Message Volume", color=color)
-        e3.set_image(url=await _chart_url(chart_cfg))
+        e3.set_image(url=await chart_url(chart_cfg))
 
         # Embed 4: Channel Profile
-        ch_wk_pct = _weekday_weekend_label(ch_wk["weekday"], ch_wk["weekend"])
+        ch_wk_pct = weekday_weekend_label(ch_wk["weekday"], ch_wk["weekend"])
 
         ch_gini = ch_concentration["gini"]
         gini_label = "well distributed" if ch_gini < 0.4 else ("moderately diverse" if ch_gini < 0.6 else "concentrated")
-        ch_growth_text = _trend_indicator(ch_growth["current"], ch_growth["previous"])
+        ch_growth_text = trend_indicator(ch_growth["current"], ch_growth["previous"])
 
         e4 = discord.Embed(title="\U0001f4ca Channel Profile", color=COLOR_NEUTRAL)
         e4.add_field(name="\U0001f4c5 Weekday / Weekend", value=ch_wk_pct, inline=True)
         e4.add_field(name="\U0001f4c8 Growth vs Prior", value=ch_growth_text, inline=True)
         e4.add_field(name="\U0001f4ca User Concentration", value=f"{ch_gini:.2f} Gini ({gini_label})", inline=True)
 
-        _off, _abbr = _et_offset()
-        ch_heatmap_bar = _build_heatmap_bar(ch_heatmap, offset=_off)
+        _off, _abbr = et_offset()
+        ch_heatmap_bar = build_heatmap_bar(ch_heatmap, offset=_off)
         e4.add_field(
             name=f"⏰ Hourly Activity ({_abbr})",
             value=f"```\n{ch_heatmap_bar}\n0     6    12    18   23\n```",
@@ -952,24 +749,24 @@ class Stats(commands.Cog):
 
         # Determine busiest day and peak hour from expanded data
         busiest_dow = max(v_dow, key=lambda d: d["sessions"]) if v_dow else {"day": 0, "sessions": 0}
-        busiest_day_name = _day_name(busiest_dow["day"]) if busiest_dow["sessions"] > 0 else "N/A"
+        busiest_day_name = day_name(busiest_dow["day"]) if busiest_dow["sessions"] > 0 else "N/A"
         peak_voice_hour = max(v_peak, key=lambda h: h["sessions"]) if v_peak else {"hour": 0, "sessions": 0}
-        peak_hour_str = _utc_hour_to_et(peak_voice_hour["hour"]) if peak_voice_hour["sessions"] > 0 else "N/A"
+        peak_hour_str = utc_hour_to_et(peak_voice_hour["hour"]) if peak_voice_hour["sessions"] > 0 else "N/A"
 
         # Embed 1: Overview (enhanced)
         e1 = discord.Embed(
             title=f"\U0001f3a4 Voice Stats — Last {days} Days",
-            description=f"**{_format_seconds(total_seconds)}** of voice activity across **{unique_users}** users.",
+            description=f"**{format_seconds(total_seconds)}** of voice activity across **{unique_users}** users.",
             color=COLOR_VOICE,
         )
         if ctx.guild.icon:
             e1.set_thumbnail(url=ctx.guild.icon.url)
-        e1.add_field(name="⏱️ Total Time", value=_format_seconds(total_seconds), inline=True)
+        e1.add_field(name="⏱️ Total Time", value=format_seconds(total_seconds), inline=True)
         e1.add_field(name="\U0001f465 Unique Users", value=str(unique_users), inline=True)
         e1.add_field(name="\U0001f4ca Sessions", value=f"{sess_count:,}", inline=True)
-        e1.add_field(name="⏱️ Avg Session", value=_format_duration(avg_session), inline=True)
-        e1.add_field(name="⏱️ Median Session", value=_format_duration(v_dist["median"]), inline=True)
-        e1.add_field(name="\U0001f3c6 Longest Session", value=_format_duration(v_dist["max"]), inline=True)
+        e1.add_field(name="⏱️ Avg Session", value=format_duration(avg_session), inline=True)
+        e1.add_field(name="⏱️ Median Session", value=format_duration(v_dist["median"]), inline=True)
+        e1.add_field(name="\U0001f3c6 Longest Session", value=format_duration(v_dist["max"]), inline=True)
         e1.add_field(name="\U0001f7e2 Currently In", value=str(currently_in), inline=True)
         e1.add_field(name="\U0001f525 Peak Hour", value=peak_hour_str, inline=True)
         e1.add_field(name="\U0001f4c5 Busiest Day", value=busiest_day_name, inline=True)
@@ -983,7 +780,7 @@ class Stats(commands.Cog):
         formatted_lines = []
         for i, (name, mins) in enumerate(user_items[:5]):
             trunc = name[:18]
-            formatted_lines.append(f"{trunc:<18} {_format_duration(mins):>8}")
+            formatted_lines.append(f"{trunc:<18} {format_duration(mins):>8}")
         e2 = discord.Embed(
             title="\U0001f3c6 Voice Leaderboard",
             description="```\n" + "\n".join(formatted_lines) + "\n```" if formatted_lines else "No data",
@@ -999,7 +796,7 @@ class Stats(commands.Cog):
         formatted_ch = []
         for i, (name, mins) in enumerate(chan_items[:5]):
             trunc = name[:18]
-            formatted_ch.append(f"{trunc:<18} {_format_duration(mins):>8}")
+            formatted_ch.append(f"{trunc:<18} {format_duration(mins):>8}")
         e3 = discord.Embed(
             title="\U0001f4cc Channel Usage",
             description="```\n" + "\n".join(formatted_ch) + "\n```" if formatted_ch else "No data",
@@ -1015,7 +812,7 @@ class Stats(commands.Cog):
             "options": {"legend": {"labels": {"fontColor": CHART_TEXT}}, "scales": {"yAxes": [{"ticks": {"fontColor": CHART_TEXT, "beginAtZero": True}, "gridLines": {"color": CHART_GRID}}], "xAxes": [{"ticks": {"fontColor": CHART_TEXT}, "gridLines": {"color": CHART_GRID}}]}},
         }
         e4 = discord.Embed(title="\U0001f4c8 Daily Voice Hours", color=COLOR_VOICE)
-        e4.set_image(url=await _chart_url(chart_cfg))
+        e4.set_image(url=await chart_url(chart_cfg))
 
         # Embed 5: Session Analysis
         buckets = v_dist.get("buckets", {})
@@ -1039,7 +836,7 @@ class Stats(commands.Cog):
         for d in v_dow:
             bar_len = int(d["sessions"] / dow_max * 16) if dow_max else 0
             bar = "█" * bar_len + "░" * (16 - bar_len)
-            dow_lines.append(f"{_day_name(d['day'])} {bar} {d['sessions']:>3}")
+            dow_lines.append(f"{day_name(d['day'])} {bar} {d['sessions']:>3}")
 
         desc = (
             "**Session Length Distribution:**\n```\n"
@@ -1073,7 +870,7 @@ class Stats(commands.Cog):
         earliest = snapshots[0]["total_members"]
         net = current - earliest
         pct = (net / earliest * 100) if earliest else 0
-        color = _embed_color_for_trend(current, earliest)
+        color = embed_color_for_trend(current, earliest)
         joins = events["joins"]
         leaves = events["leaves"]
         retention = ((joins - leaves) / joins * 100) if joins > 0 else 0
@@ -1122,7 +919,7 @@ class Stats(commands.Cog):
             "options": {"legend": {"labels": {"fontColor": CHART_TEXT}}, "scales": {"yAxes": [{"ticks": {"fontColor": CHART_TEXT, "min": min_y}, "gridLines": {"color": CHART_GRID}}], "xAxes": [{"ticks": {"fontColor": CHART_TEXT}, "gridLines": {"color": CHART_GRID}}]}},
         }
         e2 = discord.Embed(title="\U0001f4c8 Member Count Over Time", color=color)
-        e2.set_image(url=await _chart_url(chart_cfg))
+        e2.set_image(url=await chart_url(chart_cfg))
 
         # Embed 3: Daily breakdown table
         hdr = f"{'Date':<10}  {'In':>4}  {'Out':>4}  {'Net':>4}"
@@ -1157,12 +954,12 @@ class Stats(commands.Cog):
             "options": {"legend": {"labels": {"fontColor": CHART_TEXT}}, "scales": {"yAxes": [{"ticks": {"fontColor": CHART_TEXT, "beginAtZero": True}, "gridLines": {"color": CHART_GRID}}], "xAxes": [{"ticks": {"fontColor": CHART_TEXT}, "gridLines": {"color": CHART_GRID}}]}},
         }
         e4 = discord.Embed(title="\U0001f4ca Joins vs Leaves", color=color)
-        e4.set_image(url=await _chart_url(chart_cfg2))
+        e4.set_image(url=await chart_url(chart_cfg2))
 
         # Embed 5: Member Lifecycle
         # Busiest join day
         busiest_join = max(join_dow, key=lambda d: d["count"]) if join_dow else {"day": 0, "count": 0}
-        busiest_join_name = _day_name(busiest_join["day"]) if busiest_join["count"] > 0 else "N/A"
+        busiest_join_name = day_name(busiest_join["day"]) if busiest_join["count"] > 0 else "N/A"
 
         # New accounts (created < 7 days before joining) — from live guild data
         new_accounts = sum(
@@ -1172,7 +969,7 @@ class Stats(commands.Cog):
         )
 
         # Online ratio (requires the presences intent — N/A when disabled)
-        online_count = _online_count(ctx.guild, self.bot)
+        online_count = count_online_members(ctx.guild, self.bot)
         if online_count is None:
             online_ratio_text = "N/A (presence tracking off)"
         else:
@@ -1185,7 +982,7 @@ class Stats(commands.Cog):
         for d in join_dow:
             bar_len = int(d["count"] / dow_max * 16) if dow_max else 0
             bar = "█" * bar_len + "░" * (16 - bar_len)
-            dow_lines.append(f"{_day_name(d['day'])} {bar} {d['count']:>3}")
+            dow_lines.append(f"{day_name(d['day'])} {bar} {d['count']:>3}")
 
         e5 = discord.Embed(title="\U0001f4ca Member Lifecycle", color=COLOR_NEUTRAL)
         e5.add_field(name="\U0001f4c5 Busiest Join Day", value=busiest_join_name, inline=True)
@@ -1231,14 +1028,14 @@ class Stats(commands.Cog):
         half = days // 2
         prev_rows = database.get_peak_hours(ctx.guild.id, half) if half > 0 else []
         prev_total = sum(r["count"] for r in prev_rows) if prev_rows else 0
-        vol_trend = _trend_indicator(total, prev_total)
+        vol_trend = trend_indicator(total, prev_total)
 
         lines = []
         max_h = max(by_hour.values()) if by_hour else 1
-        if _ET is not None:
-            _et_off = int(datetime.datetime.now(datetime.timezone.utc).astimezone(_ET).utcoffset().total_seconds() // 3600)
+        if EASTERN is not None:
+            _et_off = int(datetime.datetime.now(datetime.timezone.utc).astimezone(EASTERN).utcoffset().total_seconds() // 3600)
         else:
-            _et_off = _et_offset()[0]
+            _et_off = et_offset()[0]
         for h in range(24):
             count = by_hour.get(h, 0)
             pct = (count / total * 100) if total else 0
@@ -1253,11 +1050,11 @@ class Stats(commands.Cog):
             description=f"```\n{''.join(f'{l}{chr(10)}' for l in lines)}```",
             color=COLOR_NEUTRAL,
         )
-        e1.add_field(name="\U0001f4ca Peak Hour", value=_utc_hour_to_et(peak_h), inline=True)
-        e1.add_field(name="\U0001f4c9 Quietest Hour", value=_utc_hour_to_et(quiet_h), inline=True)
+        e1.add_field(name="\U0001f4ca Peak Hour", value=utc_hour_to_et(peak_h), inline=True)
+        e1.add_field(name="\U0001f4c9 Quietest Hour", value=utc_hour_to_et(quiet_h), inline=True)
         e1.add_field(name="\U0001f4c8 Volume Change", value=vol_trend, inline=True)
-        e1.add_field(name="\U0001f4c5 Weekday Peak", value=_utc_hour_to_et(wk_peak), inline=True)
-        e1.add_field(name="\U0001f4c5 Weekend Peak", value=_utc_hour_to_et(we_peak), inline=True)
+        e1.add_field(name="\U0001f4c5 Weekday Peak", value=utc_hour_to_et(wk_peak), inline=True)
+        e1.add_field(name="\U0001f4c5 Weekend Peak", value=utc_hour_to_et(we_peak), inline=True)
         e1.set_footer(text=f"Total messages in window: {total:,}")
 
         # Embed 2: Channel Breakdown
@@ -1268,12 +1065,12 @@ class Stats(commands.Cog):
                 ch = ctx.guild.get_channel(c["channel_id"])
                 ch_name = ch.name if ch else str(c["channel_id"])
                 ch_name = ch_name[:16]
-                peak_str = _utc_hour_to_et(c["peak_hour"])
+                peak_str = utc_hour_to_et(c["peak_hour"])
                 chan_lines.append(f"{ch_name:<16} {peak_str}")
 
         # Weekday vs weekend heatmap comparison (ET)
-        wk_heatmap = _build_heatmap_bar(wk_hours.get("weekday", []), offset=_et_off)
-        we_heatmap = _build_heatmap_bar(wk_hours.get("weekend", []), offset=_et_off)
+        wk_heatmap = build_heatmap_bar(wk_hours.get("weekday", []), offset=_et_off)
+        we_heatmap = build_heatmap_bar(wk_hours.get("weekend", []), offset=_et_off)
 
         desc_parts = []
         if chan_lines:
@@ -1333,7 +1130,7 @@ class Stats(commands.Cog):
             top_ch_msgs = 0
 
         # Online members (requires the presences intent — N/A when disabled)
-        online = _online_count(guild, self.bot)
+        online = count_online_members(guild, self.bot)
         total_members = guild.member_count or 1
         online_text = f"{online} / {total_members} members" if online is not None else "N/A (presence tracking off)"
 
@@ -1342,14 +1139,14 @@ class Stats(commands.Cog):
         voice_text_ratio = (summary_7d["voice_seconds"] / 3600) / max(summary_7d["messages"] / 100, 1) if summary_7d["messages"] else 0
 
         # Health score
-        health = _composite_health_score({
+        health = composite_health_score({
             "dau_mau": dau_wau_mau["dau_mau"],
             "reaction_per_msg": reaction_per_msg,
             "churn_rate": churn["churn_rate"] / 100 if churn["churn_rate"] else 0,
             "voice_rate": voice_now / total_members if total_members else 0,
             "net_growth": member_change,
         })
-        label = _health_label(health)
+        label = health_label(health)
 
         # Color based on health
         if health >= 61:
@@ -1365,7 +1162,7 @@ class Stats(commands.Cog):
         # Today vs 7d Avg
         today_vs = (
             f"\U0001f4ac Messages: {msgs_today} vs {avg_msgs_7d:.0f}/day avg "
-            f"({_trend_indicator(msgs_today, avg_msgs_7d)})\n"
+            f"({trend_indicator(msgs_today, avg_msgs_7d)})\n"
             f"\U0001f3a4 Voice Users: {voice_now} vs {voice_users_7d} avg\n"
             f"\U0001f465 Member Change: {'+' if member_change >= 0 else ''}{member_change} today"
         )
@@ -1408,7 +1205,7 @@ class Stats(commands.Cog):
         # Format value based on category
         def fmt_value(val, cat):
             if cat == "voice":
-                return _format_duration(int(val))
+                return format_duration(int(val))
             if cat == "engagement":
                 return f"{val:.2f}"
             return f"{int(val):,}"
@@ -1534,7 +1331,7 @@ class Stats(commands.Cog):
             },
         }
         embed2 = discord.Embed(title="\U0001f4c8 Daily Messages Overlay", color=COLOR_NEUTRAL)
-        embed2.set_image(url=await _chart_url(chart_cfg))
+        embed2.set_image(url=await chart_url(chart_cfg))
 
         await ctx.send(embeds=[embed1, embed2])
 
@@ -1644,7 +1441,7 @@ class Stats(commands.Cog):
         e2.add_field(name="\U0001f465 Active Users", value=str(summary["active_users"]), inline=True)
         e2.add_field(name="\U0001f4c8 Growth", value=f"+{events['joins']} / -{events['leaves']}", inline=True)
         peak = max(peak_hours, key=lambda r: r["count"])["hour"] if peak_hours else "N/A"
-        e2.add_field(name="\U0001f525 Peak Hour", value=_utc_hour_to_et(peak) if isinstance(peak, int) else peak, inline=True)
+        e2.add_field(name="\U0001f525 Peak Hour", value=utc_hour_to_et(peak) if isinstance(peak, int) else peak, inline=True)
         e2.add_field(name="\U0001f504 Reactions", value=f"{summary['reactions']:,}", inline=True)
 
         await ctx.send(embeds=[e1, e2])
