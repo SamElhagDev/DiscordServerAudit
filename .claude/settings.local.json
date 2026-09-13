@@ -69,7 +69,15 @@
       "Bash(rm -f /tmp/vi_good.py /tmp/old_db.py)",
       "Bash(echo \"  exit=$?\")",
       "Bash(python -m flake8 . --count --select=E9,F63,F7,F82 --statistics)",
-      "Bash(echo \"flake8 hard gate exit=$?\")"
+      "Bash(echo \"flake8 hard gate exit=$?\")",
+      "Bash(cd \"/c/Users/Sam Elhag.EREF/source/repos/DiscordServerAudit\" && echo \"planner actions: $\\(grep -c '\"name\":' utils/planner.py\\)\" && echo \"--- bulk_tasks key limits ---\" && grep -n -E \"limit > |limit < |min\\\\\\(|max\\\\\\(|days > |days < |confirm|ConfirmView|timeout=\" cogs/bulk_tasks.py | head -30 && echo \"--- messaging confirm/limits ---\" && grep -n -E \"Confirm|confirm|max_age_hours|21600|40320|> 100|seconds > |minutes > \" cogs/messaging.py | head -30 && echo \"--- leaderboard categories / insights model ---\" && grep -n -E \"category|gemini|model\" cogs/stats.py | sed -n '1,40p')",
+      "Read(//c/Users/Sam Elhag.EREF/source/repos/DiscordServerAudit/**)",
+      "Bash(python -c \"import discord, yaml, numpy, google.genai, aiohttp; print\\('deps OK: discord', discord.__version__, '| numpy', numpy.__version__\\)\")",
+      "Bash(python scripts/verify_backoff.py)",
+      "Bash(cd \"/c/Users/Sam Elhag.EREF/source/repos/DiscordServerAudit\" && echo \"=== leaderboard categories ===\" && grep -n \"valid_categories =\" cogs/stats.py && echo \"=== prune_old_events ===\" && grep -n -A12 \"def prune_old_events\" database/activity.py | grep -E \"def |DELETE\" && echo \"=== !ask bulk_delete small-count branch ===\" && sed -n '479,486p' cogs/natural_language.py && echo \"=== chart_url callers + dataset labels ===\" && grep -n -E \"await chart_url\\\\\\(|\\\\\"label\\\\\":\" cogs/stats.py | head -20 && echo \"=== prefix !bulkdelete implementation ===\" && sed -n '64,80p' cogs/bulk_tasks.py | grep -n -E \"purge|_purge|delete\" )",
+      "Bash(cd \"/c/Users/Sam Elhag.EREF/source/repos/DiscordServerAudit\" && echo \"=== get_recent_context ===\" && sed -n '89,107p' database/factcheck.py && echo \"=== !ask delete_invites ===\" && grep -n -A8 'action == \"delete_invites\"' cogs/natural_language.py | head -12)",
+      "Bash(PYTHONIOENCODING=utf-8 python \"/c/temp/claude/C--Users-Sam-Elhag-EREF-source-repos-DiscordServerAudit/c90581b6-c5fb-415c-ae68-3d36c9869aa2/scratchpad/verify_readme.py\")",
+      "Bash(echo \"verify_readme exit=$?\")"
     ]
   }
 }
