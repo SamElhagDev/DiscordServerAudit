@@ -7,7 +7,7 @@ from discord.ext import commands
 
 import config
 import database
-from utils import rules_ingest, rules_service
+from utils import rules_forms, rules_service
 from utils.permissions import build_embed, has_user_role, member_has_user_role
 from utils.rules_embeds import build_answer_embed, build_games_embed, build_sources_embed
 from utils.rules_errors import RulesError
@@ -22,6 +22,124 @@ def _log_rules_error(ctx, e: RulesError) -> None:
         "Rules command failed | cmd=%s | guild=%s | user=%s | %s",
         ctx.command.qualified_name if ctx.command else "unknown",
         getattr(ctx.guild, "id", None), getattr(ctx.author, "id", None), e.user_message)
+
+
+_MAX_FILES = 10
+_NOT_ALLOWED = "❌ You need the user role to use this form."
+
+
+def _files_field() -> discord.ui.Label:
+    return discord.ui.Label(
+        text="Rulebook files",
+        description=".pdf .txt .md .docx, up to 10 files (optional)",
+        component=discord.ui.FileUpload(required=False, min_values=0, max_values=_MAX_FILES))
+
+
+def _link_field() -> discord.ui.Label:
+    return discord.ui.Label(
+        text="Rulebook link",
+        description="Public http(s) link to a rulebook (optional)",
+        component=discord.ui.TextInput(required=False, max_length=500,
+                                       placeholder="https://example.com/rules.pdf"))
+
+
+async def _handle_submit(interaction: discord.Interaction, *, deferred: bool = False,
+                         **kwargs) -> None:
+    """Shared on_submit body: role re-check, defer, progress, final report."""
+    guild = interaction.guild
+    if guild is None or not member_has_user_role(interaction.user, guild):
+        await interaction.response.send_message(
+            _NOT_ALLOWED, ephemeral=True, allowed_mentions=_NO_MENTIONS)
+        return
+    if not deferred:
+        await interaction.response.defer(thinking=True)
+    msg = await interaction.followup.send(
+        "Checking your submission…", wait=True, allowed_mentions=_NO_MENTIONS)
+
+    async def progress(text: str) -> None:
+        await msg.edit(content=text, allowed_mentions=_NO_MENTIONS)
+
+    try:
+        result = await rules_forms.process_submission(
+            guild.id, interaction.user.id, progress=progress, **kwargs)
+        text = result.render()
+    except RulesError as e:
+        logger.warning("Rules form failed | guild=%s | user=%s | %s",
+                       guild.id, interaction.user.id, e.user_message)
+        text = e.user_message
+    except Exception:
+        logger.error("Rules form error | guild=%s | user=%s", guild.id, interaction.user.id,
+                     exc_info=True)
+        text = "❌ Something went wrong adding that. The error has been logged."
+    await msg.edit(content=text, allowed_mentions=_NO_MENTIONS)
+
+
+async def _form_error(interaction: discord.Interaction, error: Exception) -> None:
+    logger.error("Rules form crashed | guild=%s | user=%s: %s",
+                 getattr(interaction.guild, "id", None),
+                 getattr(interaction.user, "id", None), error, exc_info=error)
+    text = "❌ Something went wrong. Check the logs."
+    if interaction.response.is_done():
+        await interaction.followup.send(text, ephemeral=True, allowed_mentions=_NO_MENTIONS)
+    else:
+        await interaction.response.send_message(text, ephemeral=True,
+                                                allowed_mentions=_NO_MENTIONS)
+
+
+class AddGameModal(discord.ui.Modal, title="Add a game"):
+    def __init__(self):
+        super().__init__(timeout=900)
+        self.name = discord.ui.Label(
+            text="Game name",
+            component=discord.ui.TextInput(required=True, min_length=1, max_length=100))
+        self.files = _files_field()
+        self.link = _link_field()
+        for item in (self.name, self.files, self.link):
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await _handle_submit(
+            interaction, game_name=self.name.component.value,
+            files=list(self.files.component.values), url=self.link.component.value)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        await _form_error(interaction, error)
+
+
+class AddSourceModal(discord.ui.Modal, title="Add rulebooks to a game"):
+    def __init__(self, game_names: list):
+        super().__init__(timeout=900)
+        options = [discord.SelectOption(label=n[:100], value=n[:100]) for n in game_names[:25]]
+        self.game = discord.ui.Label(
+            text="Game", component=discord.ui.Select(placeholder="Choose a game", options=options))
+        self.files = _files_field()
+        self.link = _link_field()
+        for item in (self.game, self.files, self.link):
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        if guild is None or not member_has_user_role(interaction.user, guild):
+            await interaction.response.send_message(
+                _NOT_ALLOWED, ephemeral=True, allowed_mentions=_NO_MENTIONS)
+            return
+        values = self.game.component.values
+        if not values:
+            await interaction.response.send_message(
+                "❌ Choose a game.", ephemeral=True, allowed_mentions=_NO_MENTIONS)
+            return
+        await interaction.response.defer(thinking=True)
+        try:
+            row = await database.run(rules_service.resolve_game, guild.id, values[0])
+        except RulesError as e:
+            await interaction.followup.send(e.user_message, allowed_mentions=_NO_MENTIONS)
+            return
+        await _handle_submit(
+            interaction, deferred=True, game=row, files=list(self.files.component.values),
+            url=self.link.component.value)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        await _form_error(interaction, error)
 
 
 class Rules(commands.Cog):
@@ -60,62 +178,33 @@ class Rules(commands.Cog):
             _log_rules_error(ctx, e)
             await ctx.send(e.user_message, allowed_mentions=_NO_MENTIONS)
 
-    @rules.command(name="addgame", description="Create a game to hold rulebooks.")
+    @rules.command(name="addgame", description="Create a game and add its rulebooks (opens a form).")
     @commands.guild_only()
     @has_user_role()
-    async def addgame(self, ctx, *, name: str):
-        try:
-            await ctx.defer()
-            row = await rules_service.create_game(ctx.guild.id, name, ctx.author.id)
-            await ctx.send(
-                f"✅ Game **{row['name']}** created. Add rulebooks with `/rules addsource`.",
-                allowed_mentions=_NO_MENTIONS)
-        except RulesError as e:
-            _log_rules_error(ctx, e)
-            await ctx.send(e.user_message, allowed_mentions=_NO_MENTIONS)
+    async def addgame(self, ctx):
+        if ctx.interaction is None:
+            await ctx.send("Use `/rules addgame` — it opens a form.", allowed_mentions=_NO_MENTIONS)
+            return
+        await ctx.interaction.response.send_modal(AddGameModal())
 
-    @rules.command(name="addsource", description="Add a rulebook (file or public URL) to a game.")
+    @rules.command(name="addsource", description="Add rulebooks to a game (opens a form).")
     @commands.guild_only()
     @has_user_role()
-    async def addsource(self, ctx, game: str, file: discord.Attachment | None = None,
-                        url: str | None = None):
-        if file is not None and url:
-            await ctx.send("❌ Provide either a file or a url, not both.",
-                           allowed_mentions=_NO_MENTIONS)
-            return
-        if file is None and not url:
-            await ctx.send("❌ Provide a file attachment or a url.",
-                           allowed_mentions=_NO_MENTIONS)
+    async def addsource(self, ctx):
+        if ctx.interaction is None:
+            await ctx.send("Use `/rules addsource` — it opens a form.", allowed_mentions=_NO_MENTIONS)
             return
         try:
-            await ctx.defer()
-            row = await database.run(rules_service.resolve_game, ctx.guild.id, game)
-            max_bytes = config.get("rules.max_source_bytes", 52428800)
-            if file is not None:
-                # Validate type/size from metadata before downloading the bytes.
-                rules_ingest.resolve_mime(file.filename, file.size, max_bytes)
-                data = await file.read()
-                filename = file.filename
-                mime = rules_ingest.resolve_mime(filename, len(data), max_bytes)
-                origin, origin_ref = "upload", filename
-            else:
-                timeout_s = config.get("rules.url_fetch_timeout_seconds", 20)
-                # fetch_url runs check_public_url off-loop on every hop.
-                async with rules_ingest.create_fetch_session(timeout_s) as session:
-                    data, filename, mime = await rules_ingest.fetch_url(
-                        session, url, max_bytes, timeout_s)
-                origin, origin_ref = "url", url
-            total = await rules_service.add_source(
-                row, data, filename, mime, origin, origin_ref, ctx.author.id)
-            embed = discord.Embed(title=f"📚 Source added to {row['name']}"[:256],
-                                  color=discord.Color.dark_gold())
-            embed.add_field(name="File", value=filename[:1024])
-            embed.add_field(name="Size (MB)", value=f"{len(data) / 1048576:.1f}")
-            embed.add_field(name="Total sources", value=str(total))
-            await ctx.send(allowed_mentions=_NO_MENTIONS, embed=embed)
-        except RulesError as e:
-            _log_rules_error(ctx, e)
-            await ctx.send(e.user_message, allowed_mentions=_NO_MENTIONS)
+            rows = await database.run(database.list_games, ctx.guild.id)
+        except Exception:
+            logger.error("Listing games failed | guild=%s | user=%s",
+                         ctx.guild.id, ctx.author.id, exc_info=True)
+            raise
+        if not rows:
+            await ctx.send("No games yet. Add one with `/rules addgame`.",
+                           allowed_mentions=_NO_MENTIONS, ephemeral=True)
+            return
+        await ctx.interaction.response.send_modal(AddSourceModal([r["name"] for r in rows]))
 
     @rules.command(name="ask", description="Ask a rules question answered from a game's rulebooks.")
     @commands.guild_only()
@@ -204,10 +293,6 @@ class Rules(commands.Cog):
 
     @deletegame.autocomplete("game")
     async def _deletegame_game_ac(self, interaction: discord.Interaction, current: str):
-        return await self.game_autocomplete(interaction, current)
-
-    @addsource.autocomplete("game")
-    async def _addsource_game_ac(self, interaction: discord.Interaction, current: str):
         return await self.game_autocomplete(interaction, current)
 
     @ask.autocomplete("game")

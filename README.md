@@ -422,8 +422,8 @@ User-role-only commands for per-game rulebook Q&A. Each game's rulebooks are sto
 | Command | Description |
 |---|---|
 | `/rules games` | List games and their source counts |
-| `/rules addgame <name>` | Create a game |
-| `/rules addsource <game> [file] [url]` | Add a rulebook from an attachment or a public http(s) URL (exactly one) |
+| `/rules addgame` | Opens a form: game name, optional rulebook files (up to 10 uploads) and/or a link; creates the game and indexes the rulebooks |
+| `/rules addsource` | Opens a form: pick a game from a dropdown, then attach up to 10 rulebook files and/or paste a public http(s) link (at least one) |
 | `/rules sources <game>` | List a game's sources |
 | `/rules ask <game> <question>` | Ask a rules question; the answer is posted publicly with citations |
 | `/rules removesource <game> <source_id>` | Remove one source from a game (asks for ✅/❌ confirmation) |
@@ -443,6 +443,7 @@ User-role-only commands for per-game rulebook Q&A. Each game's rulebooks are sto
 | `rules.max_citations` | `3` | Max citations shown with an answer |
 | `rules.max_question_chars` | `500` | Max length of a question |
 
+- **Forms:** `addgame` and `addsource` take no arguments; they open a Discord form (modal) and work as slash commands only (`!rules addgame` just points you to the slash command). Accepted files are `.pdf .txt .md .docx`, up to 10 per submission, each within `rules.max_source_bytes`. Each file is reported as ✅ or ❌ in a final summary; one bad file doesn't stop the others. The dropdown lists up to 25 games. Forms need `discord.py>=2.7` (file uploads in modals).
 - **Large rulebooks:** Discord's attachment upload limit may be below the 50 MB `max_source_bytes`, so add large rulebooks by URL instead of as an attachment.
 - **API key:** requires a Gemini Developer API key (the same `DiscordServerAudit_GEMINI_KEY` used elsewhere); File Search is not available through other providers.
 - URLs are fetched with SSRF protection; private, loopback and link-local addresses are rejected.
