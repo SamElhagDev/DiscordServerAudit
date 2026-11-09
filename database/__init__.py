@@ -32,6 +32,7 @@ from .schema import (  # noqa: F401
     _SCHEMA_VERSION,
     _init_message_context_fts,
     _init_message_embeddings,
+    _init_rules_tables,
     _migrate_add_total_words,
     _migrate_timestamps,
     _run_migrations,
@@ -122,4 +123,18 @@ from .stats_read import (  # noqa: F401
     get_voice_peak_hours,
     get_voice_session_distribution,
     get_weekday_weekend_split,
+)
+
+from .rules import (  # noqa: F401
+    GameExistsError,
+    add_source,
+    create_game,
+    delete_game,
+    delete_source,
+    game_name_key,
+    get_game,
+    get_source,
+    list_games,
+    list_sources,
+    search_game_names,
 )

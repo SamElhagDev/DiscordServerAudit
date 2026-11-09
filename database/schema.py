@@ -69,6 +69,36 @@ def _init_message_embeddings():
     logger.debug("message_embeddings table + delete trigger ready")
 
 
+def _init_rules_tables():
+    """Games + rulebook sources for the game rules Q&A feature (008)."""
+    with get_conn() as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS rules_games (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                name_key TEXT NOT NULL,
+                store_name TEXT NOT NULL,
+                created_by INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(guild_id, name_key)
+            );
+            CREATE TABLE IF NOT EXISTS rules_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                game_id INTEGER NOT NULL REFERENCES rules_games(id),
+                display_name TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                origin_ref TEXT NOT NULL,
+                document_name TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                added_by INTEGER NOT NULL,
+                added_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_rules_sources_game ON rules_sources(game_id);
+        """)
+    logger.debug("rules tables ready")
+
+
 def init_db():
     logger.info("Initialising database at: %s", connection.DB_PATH)
     try:
@@ -226,6 +256,7 @@ def init_db():
         logger.info("Database schema ready")
         _init_message_context_fts()
         _init_message_embeddings()
+        _init_rules_tables()
         _run_migrations()
         logger.info("Database initialised successfully")
     except Exception:

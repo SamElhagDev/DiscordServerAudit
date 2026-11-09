@@ -7,6 +7,88 @@ import config
 logger = logging.getLogger(__name__)
 
 
+def resolve_unique_role(guild, role_name):
+    """
+    Resolve a configured role name to a single Role in `guild`.
+
+    Role names are not unique; matching by name string allows privilege
+    escalation, so callers must compare the returned Role by identity (ID).
+    Returns (role, None) on a unique match, else (None, reason) where reason is
+    "unconfigured", "missing" or "ambiguous". Ambiguity fails closed.
+    """
+    if not role_name:
+        return None, "unconfigured"
+    matching = [r for r in guild.roles if r.name == role_name]
+    if not matching:
+        return None, "missing"
+    if len(matching) > 1:
+        return None, "ambiguous"
+    return matching[0], None
+
+
+def member_has_user_role(member, guild) -> bool:
+    """
+    True if `member` holds the uniquely-resolved user_role or admin_role.
+    Synchronous and silent (safe for autocomplete). Ambiguous/missing roles grant nothing.
+    """
+    if guild is None:
+        return False
+    roles = getattr(member, "roles", None) or []
+    for key in ("user_role", "admin_role"):
+        role, _ = resolve_unique_role(guild, config.get(key))
+        if role is not None and role in roles:
+            return True
+    return False
+
+
+def has_user_role():
+    """
+    Check decorator for game-rules commands: admits the configured user_role
+    or admin_role. Guild-only.
+    """
+    async def predicate(ctx: commands.Context) -> bool:
+        cmd_name = ctx.command.qualified_name if ctx.command else "unknown"
+        if ctx.guild is None:
+            logger.warning("Permission denied | cmd=%r | DM context — rules commands are guild-only", cmd_name)
+            return False
+
+        if member_has_user_role(ctx.author, ctx.guild):
+            return True
+
+        user_role_name = config.get("user_role")
+        _, reason = resolve_unique_role(ctx.guild, user_role_name)
+        if reason == "unconfigured":
+            logger.error(
+                "user_role is not configured — denying %r | guild=%r (ID=%s)",
+                cmd_name, ctx.guild.name, ctx.guild.id,
+            )
+            await ctx.send("❌ `user_role` is not configured in config.yaml.")
+            return False
+
+        if reason == "ambiguous":
+            logger.error(
+                "Multiple roles named %r in guild %r (ID=%s) — user-role gate is ambiguous, denying %r",
+                user_role_name, ctx.guild.name, ctx.guild.id, cmd_name,
+            )
+            await ctx.send(
+                f"❌ Multiple roles are named **{user_role_name}** in this server. "
+                "An owner must remove or rename the duplicate before rules commands will work."
+            )
+            return False
+
+        logger.warning(
+            "Permission denied | cmd=%r | user=%s (ID=%s) | guild=%r (ID=%s) | missing role %r",
+            cmd_name, ctx.author, ctx.author.id, ctx.guild.name, ctx.guild.id, user_role_name,
+        )
+        await ctx.send(
+            f"❌ You need the **{user_role_name}** role to use rules commands.",
+            ephemeral=True,
+        )
+        return False
+
+    return commands.check(predicate)
+
+
 def has_admin_role():
     """
     Check decorator that restricts commands to members with the configured admin role.
@@ -30,12 +112,9 @@ def has_admin_role():
             logger.warning("Permission denied | cmd=%r | DM context — admin commands are guild-only", cmd_name)
             return False
 
-        # Resolve the configured name to actual Role object(s) in THIS guild.
-        # Role names are not unique; matching by name string allows privilege
-        # escalation, so resolve to a Role and compare by identity (ID) instead.
-        matching = [r for r in ctx.guild.roles if r.name == role_name]
+        admin_role, reason = resolve_unique_role(ctx.guild, role_name)
 
-        if not matching:
+        if reason == "missing":
             logger.error(
                 "admin_role %r does not exist in guild %r (ID=%s) — denying %r",
                 role_name, ctx.guild.name, ctx.guild.id, cmd_name,
@@ -43,7 +122,7 @@ def has_admin_role():
             await ctx.send(f"❌ The configured admin role **{role_name}** does not exist in this server.")
             return False
 
-        if len(matching) > 1:
+        if reason == "ambiguous":
             # Ambiguous gate = fail closed. Guessing a role here is the exact
             # escalation vector this check exists to prevent.
             logger.error(
@@ -56,7 +135,6 @@ def has_admin_role():
             )
             return False
 
-        admin_role = matching[0]
         if admin_role not in ctx.author.roles:  # Role.__eq__ compares by ID
             logger.warning(
                 "Permission denied | cmd=%r | user=%s (ID=%s) | guild=%r (ID=%s) | missing role %r (ID=%s)",

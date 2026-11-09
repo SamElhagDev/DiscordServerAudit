@@ -4,6 +4,9 @@ bot:
 # The role name that grants access to all bot commands (exact match, case-sensitive)
 admin_role: "Bot Admin"
 
+# The role name allowed to manage game rules sources (exact match, case-sensitive)
+user_role: "Rancher"
+
 # Channel IDs for audit output (set after bot joins server)
 log_channel_id: 0         # General bot logs
 audit_channel_id: 0       # Audit results posted here
@@ -114,6 +117,17 @@ factcheck:
     # backfill (/factcheckrefresh)
     backfill_messages_per_channel: 0  # Max history messages pulled per channel
     backfill_channel_delay: 1    # Seconds between channels during backfill
+
+# Game rules Q&A (Gemini File Search over uploaded rulebooks)
+rules:
+  enabled: true                    # Master toggle for the game rules feature
+  model: "gemini-3.1-pro-preview"  # Pro model, chosen for multi-rule interactions (e.g. Twilight Imperium 4). Must support File Search.
+  answer_timeout_seconds: 90       # Max seconds to wait for an answer (Pro is slower than Flash)
+  index_timeout_seconds: 300       # Max seconds to wait for a source to finish indexing
+  max_source_bytes: 52428800       # Max size of a rules source file in bytes (50 MB)
+  url_fetch_timeout_seconds: 20    # Seconds to wait when downloading a source URL
+  max_citations: 3                 # Max citations shown with an answer
+  max_question_chars: 500          # Max length of a question
 
 # Performance tuning. Each toggle falls back to pre-006 behavior when disabled.
 performance:

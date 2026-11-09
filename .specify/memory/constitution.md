@@ -1,6 +1,10 @@
 <!--
 SYNC IMPACT REPORT
 ==================
+Version change: 1.0.0 → 1.1.0 (MINOR: expanded gating guidance — Principle II admits `@has_user_role()`
+for the game-rules cog `cogs/rules.py`)
+
+---- previous report ----
 Version change: [TEMPLATE] → 1.0.0 (initial constitution — MAJOR: first adoption, all placeholders resolved)
 
 Modified principles:
@@ -43,9 +47,11 @@ unrelated concerns together, making the bot fragile under partial failures and h
 
 ### II. Admin Role Gating (NON-NEGOTIABLE)
 
-Every command MUST be decorated with `@has_admin_role()` from `utils/permissions.py`. No command
+Every command MUST be decorated with `@has_admin_role()` from `utils/permissions.py`, except commands in
+the game-rules cog (`cogs/rules.py`), which MUST be decorated with `@has_user_role()`. That gate admits
+the configured `user_role` and the `admin_role`. No command
 MAY be accessible without this check, including manual triggers, diagnostic commands, and any future
-slash commands. The admin role name MUST be sourced exclusively from `config.yaml:admin_role`.
+slash commands. The role names MUST be sourced exclusively from `config.yaml:admin_role` and `config.yaml:user_role`.
 Hard-coding role names or IDs in command code is forbidden.
 
 **Rationale**: A Discord admin bot with unguarded commands is a server security liability. The
@@ -137,4 +143,4 @@ All PRs that add commands, cogs, or audit checks MUST include a Constitution Che
 compliance with Principles I–V. Complexity beyond what the principles permit MUST be justified
 in the PR description with a Complexity Tracking entry.
 
-**Version**: 1.0.0 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-05-12
+**Version**: 1.1.0 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-11-09

@@ -415,9 +415,43 @@ Keyword and semantic results are merged by reciprocal-rank fusion into a single 
 
 ---
 
+## Game Rules
+
+User-role-only commands for per-game rulebook Q&A. Each game's rulebooks are stored in a single Gemini File Search store, and answers come only from the uploaded sources.
+
+| Command | Description |
+|---|---|
+| `/rules games` | List games and their source counts |
+| `/rules addgame <name>` | Create a game |
+| `/rules addsource <game> [file] [url]` | Add a rulebook from an attachment or a public http(s) URL (exactly one) |
+| `/rules sources <game>` | List a game's sources |
+| `/rules ask <game> <question>` | Ask a rules question; the answer is posted publicly with citations |
+| `/rules removesource <game> <source_id>` | Remove one source from a game (asks for ✅/❌ confirmation) |
+| `/rules deletegame <game>` | Delete a game and all its sources (asks for ✅/❌ confirmation) |
+
+- **Access:** requires the configured user role (`user_role`, default `Rancher`; `@has_user_role()`); autocomplete shows nothing to other users. Set the role name with the `user_role` config or the `DiscordServerAudit_USER_ROLE` env var; that role plus the admin role are admitted.
+- **Config:** the `rules:` section in `config.yaml` has these keys:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `rules.enabled` | `true` | Master toggle; `false` disables the commands |
+| `rules.model` | `gemini-3.1-pro-preview` | Model used to answer. This is the **Pro** model, chosen for multi-rule interactions; it costs noticeably more per question and is slower than Flash models. Must support File Search |
+| `rules.answer_timeout_seconds` | `90` | Max seconds to wait for an answer |
+| `rules.index_timeout_seconds` | `300` | Max seconds to wait for a source to finish indexing |
+| `rules.max_source_bytes` | `52428800` (50 MB) | Max size of a source file |
+| `rules.url_fetch_timeout_seconds` | `20` | Seconds to wait when downloading a source URL |
+| `rules.max_citations` | `3` | Max citations shown with an answer |
+| `rules.max_question_chars` | `500` | Max length of a question |
+
+- **Large rulebooks:** Discord's attachment upload limit may be below the 50 MB `max_source_bytes`, so add large rulebooks by URL instead of as an attachment.
+- **API key:** requires a Gemini Developer API key (the same `DiscordServerAudit_GEMINI_KEY` used elsewhere); File Search is not available through other providers.
+- URLs are fetched with SSRF protection; private, loopback and link-local addresses are rejected.
+
+---
+
 ## Access control
 
-Gated commands use the `@has_admin_role()` check in `utils/permissions.py`. It resolves the configured `admin_role` name to a role in the current server and compares by role ID; it fails closed if the role is missing or the name is ambiguous, and it only works in servers (not DMs).
+Gated commands use the `@has_admin_role()` check in `utils/permissions.py`; the `/rules` commands use `@has_user_role()` instead (the `user_role` config / `DiscordServerAudit_USER_ROLE` env admits that role plus the admin role). It resolves the configured `admin_role` name to a role in the current server and compares by role ID; it fails closed if the role is missing or the name is ambiguous, and it only works in servers (not DMs).
 
 | Access | Commands |
 |---|---|

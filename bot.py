@@ -77,6 +77,7 @@ COGS = [
     "cogs.natural_language",
     "cogs.stats",
     "cogs.fact_check",
+    "cogs.rules",
 ]
 
 
@@ -96,6 +97,7 @@ class AdminBot(commands.Bot):
             command_prefix=cfg.get("bot", {}).get("prefix", "!"),
             intents=intents,
             help_command=RichHelpCommand(),
+            allowed_mentions=discord.AllowedMentions.none(),
         )
         self.scheduler = IntervalScheduler(self)
         self._start_time = time.monotonic()

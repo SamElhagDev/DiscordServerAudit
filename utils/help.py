@@ -13,6 +13,7 @@ _COG_COLORS = {
     "Stats":           discord.Color.blue(),
     "NaturalLanguage": discord.Color.purple(),
     "FactCheck":       discord.Color.teal(),
+    "Rules":           discord.Color.dark_gold(),
 }
 _DEFAULT_COLOR = discord.Color.blue()
 
@@ -27,6 +28,7 @@ _COG_LABELS = {
     "Stats":           "📈  Stats & Analytics",
     "NaturalLanguage": "💬  Natural Language",
     "FactCheck":       "🔍  Fact-Check",
+    "Rules":           "📖  Game Rules",
 }
 
 # Short descriptions shown in the overview embed
@@ -40,6 +42,7 @@ _COG_DESCRIPTIONS = {
     "Stats":           "Server activity dashboards, user stats, voice tracking, leaderboards, user comparisons, server health pulse, and history scanning.",
     "NaturalLanguage": "Describe admin tasks in plain English and execute them with AI.",
     "FactCheck":       "React with an emoji to fact-check any message using AI.",
+    "Rules":           "Upload rulebooks per game and ask rules questions answered only from them (user role).",
 }
 
 
