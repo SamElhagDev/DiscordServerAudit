@@ -5,7 +5,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import discord
 from discord.ext import commands
 
-from cogs.rules import AddGameModal, AddSourceModal, Rules
+from cogs.rules import AddGameModal, AddSourceModal, RemoveBookModal, Rules
 from utils.rules_errors import RulesError
 
 
@@ -79,7 +79,7 @@ class AddSourceTests(unittest.IsolatedAsyncioTestCase):
         cog._confirm = confirm
         with patch("cogs.rules.database.run", new=AsyncMock(side_effect=[row, []])), \
                 patch("cogs.rules.rules_service.resolve_game", return_value=row):
-            await cog.deletegame.callback(cog, ctx, "stored name")
+            await cog.delete.callback(cog, ctx, "stored name")
         self.assertIn("Stored Name", confirm.await_args.args[1])
         self.assertNotIn("stored name", confirm.await_args.args[1])
 
@@ -88,11 +88,11 @@ class ErrorLoggingAndDeferTests(unittest.IsolatedAsyncioTestCase):
     async def test_rules_error_logged_as_warning(self):
         cog = Rules(SimpleNamespace())
         ctx = _ctx()
-        ctx.command = SimpleNamespace(qualified_name="rules ask")
+        ctx.command = SimpleNamespace(qualified_name="gamerules ask")
         with patch("cogs.rules.database.run", new=AsyncMock(side_effect=RulesError("no such game"))):
             with self.assertLogs("cogs.rules", level="WARNING") as cm:
                 await cog.ask.callback(cog, ctx, "G", question="q")
-        self.assertIn("rules ask", cm.output[0])
+        self.assertIn("gamerules ask", cm.output[0])
         self.assertIn("no such game", cm.output[0])
 
 
@@ -101,15 +101,38 @@ class RegistrationTests(unittest.IsolatedAsyncioTestCase):
         from cogs import rules
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
         await rules.setup(bot)
-        group = bot.tree.get_command("rules")
+        group = bot.tree.get_command("gamerules")
         names = {c.name for c in group.commands}
-        self.assertEqual(names, {"games", "addgame", "addsource", "ask", "sources", "removesource", "deletegame"})
-        for n in ("addgame", "addsource"):
+        self.assertEqual(names, {"list", "add", "addbook", "ask", "books", "removebook", "delete"})
+        for n in ("add", "addbook"):
             self.assertEqual(list(group.get_command(n).parameters), [])
-        for n in ("ask", "sources", "removesource", "deletegame"):
+        for n in ("ask", "books", "removebook", "delete"):
             sub = group.get_command(n)
             param = next(p for p in sub.parameters if p.name == "game")
             self.assertIsNotNone(param.autocomplete)
+            self.assertNotEqual(param.description, "…")
+        self.assertEqual([p.name for p in group.get_command("removebook").parameters], ["game"])
+        await bot.close()
+
+    async def test_group_help_lists_every_subcommand_as_slash(self):
+        from cogs import rules
+        from utils.help import RichHelpCommand
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        await rules.setup(bot)
+        group = bot.get_command("gamerules")
+        helper = RichHelpCommand()
+        helper.context = SimpleNamespace(clean_prefix="!")
+        dest = SimpleNamespace(send=AsyncMock())
+        helper.get_destination = lambda: dest
+        helper.filter_commands = AsyncMock(side_effect=lambda cmds, sort=False: list(cmds))
+        await helper.send_group_help(group)
+        embed = dest.send.await_args.kwargs["embed"]
+        names = [f.name for f in embed.fields]
+        self.assertEqual(names[0], "`/gamerules list`")
+        for sub in ("ask", "add", "addbook", "books", "removebook", "delete"):
+            self.assertTrue(any(n.startswith(f"`/gamerules {sub}") for n in names), sub)
+        self.assertNotIn("No description.", [f.value for f in embed.fields])
+        self.assertIn("user role", embed.footer.text)
         await bot.close()
 
 
@@ -132,22 +155,22 @@ class FormCommandTests(unittest.IsolatedAsyncioTestCase):
         cog = Rules(SimpleNamespace())
         ctx = _ctx()
         ctx.interaction = None
-        await cog.addgame.callback(cog, ctx)
-        ctx.send.assert_awaited_once_with("Use `/rules addgame` — it opens a form.",
+        await cog.add.callback(cog, ctx)
+        ctx.send.assert_awaited_once_with("Use `/gamerules add` — it opens a form.",
                                           allowed_mentions=ANY)
 
     async def test_addsource_prefix_fallback(self):
         cog = Rules(SimpleNamespace())
         ctx = _ctx()
         ctx.interaction = None
-        await cog.addsource.callback(cog, ctx)
-        ctx.send.assert_awaited_once_with("Use `/rules addsource` — it opens a form.",
+        await cog.addbook.callback(cog, ctx)
+        ctx.send.assert_awaited_once_with("Use `/gamerules addbook` — it opens a form.",
                                           allowed_mentions=ANY)
 
     async def test_addgame_opens_modal(self):
         cog = Rules(SimpleNamespace())
         ctx = _slash_ctx()
-        await cog.addgame.callback(cog, ctx)
+        await cog.add.callback(cog, ctx)
         modal = ctx.interaction.response.send_modal.await_args.args[0]
         self.assertIsInstance(modal, AddGameModal)
         self.assertLessEqual(len(modal.title), 45)
@@ -156,9 +179,9 @@ class FormCommandTests(unittest.IsolatedAsyncioTestCase):
         cog = Rules(SimpleNamespace())
         ctx = _slash_ctx()
         with patch("cogs.rules.database.run", new=AsyncMock(return_value=[])):
-            await cog.addsource.callback(cog, ctx)
+            await cog.addbook.callback(cog, ctx)
         ctx.interaction.response.send_modal.assert_not_awaited()
-        ctx.send.assert_awaited_once_with("No games yet. Add one with `/rules addgame`.",
+        ctx.send.assert_awaited_once_with("No games yet. Add one with `/gamerules add`.",
                                           allowed_mentions=ANY, ephemeral=True)
 
     async def test_addsource_opens_modal_with_dropdown_capped_at_25(self):
@@ -166,7 +189,7 @@ class FormCommandTests(unittest.IsolatedAsyncioTestCase):
         ctx = _slash_ctx()
         rows = [{"name": f"G{i}"} for i in range(40)]
         with patch("cogs.rules.database.run", new=AsyncMock(return_value=rows)):
-            await cog.addsource.callback(cog, ctx)
+            await cog.addbook.callback(cog, ctx)
         modal = ctx.interaction.response.send_modal.await_args.args[0]
         self.assertIsInstance(modal, AddSourceModal)
         self.assertEqual(len(modal.game.component.options), 25)
@@ -295,6 +318,86 @@ class ModalSubmitTests(unittest.IsolatedAsyncioTestCase):
                       new=AsyncMock(return_value=res)) as proc:
             await m.on_submit(inter)
         self.assertEqual(proc.await_args.kwargs["game"], row)
+
+
+def _src(i, name=None):
+    return {"id": i, "display_name": name or f"Book {i}", "size_bytes": 1048576, "origin": "upload"}
+
+
+class RemoveBookTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prefix_fallback(self):
+        cog = Rules(SimpleNamespace())
+        ctx = _ctx()
+        ctx.interaction = None
+        await cog.removebook.callback(cog, ctx, "Catan")
+        ctx.send.assert_awaited_once_with("Use `/gamerules removebook` — it opens a form.",
+                                          allowed_mentions=ANY)
+
+    async def test_opens_modal_listing_books_capped_at_25(self):
+        cog = Rules(SimpleNamespace())
+        ctx = _slash_ctx()
+        row = {"id": 1, "name": "Catan"}
+        books = [_src(i) for i in range(1, 31)]
+        with patch("cogs.rules.database.run", new=AsyncMock(side_effect=[row, books])):
+            await cog.removebook.callback(cog, ctx, "catan")
+        modal = ctx.interaction.response.send_modal.await_args.args[0]
+        self.assertIsInstance(modal, RemoveBookModal)
+        opts = modal.book.component.options
+        self.assertEqual(len(opts), 25)
+        self.assertEqual((opts[0].label, opts[0].value), ("Book 1", "1"))
+        self.assertIn("25 of 30", modal.book.description)
+        self.assertLessEqual(len(modal.title), 45)
+        self.assertLessEqual(len(modal.book.text), 45)
+
+    async def test_no_books_replies_ephemeral_without_modal(self):
+        cog = Rules(SimpleNamespace())
+        ctx = _slash_ctx()
+        with patch("cogs.rules.database.run",
+                   new=AsyncMock(side_effect=[{"id": 1, "name": "Catan"}, []])):
+            await cog.removebook.callback(cog, ctx, "Catan")
+        ctx.interaction.response.send_modal.assert_not_awaited()
+        self.assertTrue(ctx.send.await_args.kwargs["ephemeral"])
+
+    async def test_unknown_game_replies_ephemeral(self):
+        cog = Rules(SimpleNamespace())
+        ctx = _slash_ctx()
+        with patch("cogs.rules.database.run", new=AsyncMock(side_effect=RulesError("no game"))):
+            await cog.removebook.callback(cog, ctx, "Nope")
+        ctx.interaction.response.send_modal.assert_not_awaited()
+        ctx.send.assert_awaited_once_with("no game", allowed_mentions=ANY, ephemeral=True)
+
+    async def test_submit_removes_selected_book(self):
+        inter = _inter()
+        row = {"id": 1, "name": "Catan"}
+        m = RemoveBookModal(row, [_src(7, "Base rules"), _src(8)])
+        m.book.component._values = ["7"]
+        with patch("cogs.rules.member_has_user_role", return_value=True), \
+                patch("cogs.rules.rules_service.remove_source",
+                      new=AsyncMock(return_value="Base rules")) as rm:
+            await m.on_submit(inter)
+        self.assertEqual(rm.await_args.args[:2], (row, 7))
+        self.assertIn("Removed **Base rules** from **Catan**",
+                      inter.followup.send.await_args.args[0])
+
+    async def test_submit_rejects_non_user_role(self):
+        inter = _inter()
+        m = RemoveBookModal({"id": 1, "name": "Catan"}, [_src(7)])
+        m.book.component._values = ["7"]
+        with patch("cogs.rules.member_has_user_role", return_value=False), \
+                patch("cogs.rules.rules_service.remove_source", new=AsyncMock()) as rm:
+            await m.on_submit(inter)
+        rm.assert_not_awaited()
+        self.assertTrue(inter.response.send_message.await_args.kwargs["ephemeral"])
+
+    async def test_submit_shows_rules_error(self):
+        inter = _inter()
+        m = RemoveBookModal({"id": 1, "name": "Catan"}, [_src(7)])
+        m.book.component._values = ["7"]
+        with patch("cogs.rules.member_has_user_role", return_value=True), \
+                patch("cogs.rules.rules_service.remove_source",
+                      new=AsyncMock(side_effect=RulesError("gone"))):
+            await m.on_submit(inter)
+        self.assertEqual(inter.followup.send.await_args.args[0], "gone")
 
 
 if __name__ == "__main__":

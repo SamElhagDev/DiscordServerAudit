@@ -17,7 +17,7 @@ def build_answer_embed(game_name: str, question: str, answer: RulesAnswer) -> di
         return discord.Embed(
             description=_trunc(
                 f"🤷 The uploaded rules for **{game_name}** don't cover that. "
-                "Try rephrasing, or add a source that does.", 4096),
+                "Try rephrasing, or add a rulebook that does.", 4096),
             color=discord.Color.greyple(),
         )
     title = _trunc(f"📖 {game_name}", 256)
@@ -50,19 +50,19 @@ def build_answer_embed(game_name: str, question: str, answer: RulesAnswer) -> di
 
 def build_games_embed(rows: list) -> discord.Embed:
     if not rows:
-        desc = "No games yet. Add one with `/rules addgame`."
+        desc = "No games yet. Add one with `/gamerules add`."
     else:
-        desc = "\n".join(f"**{r['name']}** — {r['source_count']} source(s)" for r in rows)
+        desc = "\n".join(f"**{r['name']}** — {r['source_count']} rulebook(s)" for r in rows)
     return discord.Embed(title="🎲 Games", description=_trunc(desc, 4096),
                          color=discord.Color.dark_gold())
 
 
 def build_sources_embed(game_name: str, rows: list) -> discord.Embed:
     if not rows:
-        desc = "No sources yet. Add one with `/rules addsource`."
+        desc = "No rulebooks yet. Add one with `/gamerules addbook`."
     else:
         desc = "\n".join(
             f"`#{r['id']}` {r['display_name']} — {r['size_bytes'] / 1048576:.1f} MB ({r['origin']})"
             for r in rows)
-    return discord.Embed(title=_trunc(f"📚 Sources for {game_name}", 256),
+    return discord.Embed(title=_trunc(f"📚 Rulebooks for {game_name}", 256),
                          description=_trunc(desc, 4096), color=discord.Color.dark_gold())

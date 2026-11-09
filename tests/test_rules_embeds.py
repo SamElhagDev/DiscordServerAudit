@@ -42,15 +42,15 @@ class RulesEmbedsTests(unittest.TestCase):
         self.assertEqual(len(e.fields), 25)
 
     def test_empty_games_embed_points_to_addgame(self):
-        self.assertIn("/rules addgame", re_.build_games_embed([]).description)
+        self.assertIn("/gamerules add", re_.build_games_embed([]).description)
 
     def test_games_embed_lists_games(self):
         e = re_.build_games_embed([{"name": "Catan", "source_count": 2}])
-        self.assertIn("**Catan** — 2 source(s)", e.description)
+        self.assertIn("**Catan** — 2 rulebook(s)", e.description)
 
     def test_sources_embed_formats_size(self):
         e = re_.build_sources_embed("Catan", [{"id": 7, "display_name": "a.pdf", "size_bytes": 3_145_728, "origin": "upload"}])
         self.assertIn("`#7` a.pdf — 3.0 MB (upload)", e.description)
 
     def test_empty_sources_embed(self):
-        self.assertIn("/rules addsource", re_.build_sources_embed("Catan", []).description)
+        self.assertIn("/gamerules addbook", re_.build_sources_embed("Catan", []).description)

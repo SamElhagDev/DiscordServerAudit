@@ -142,6 +142,53 @@ class AddSourceModal(discord.ui.Modal, title="Add rulebooks to a game"):
         await _form_error(interaction, error)
 
 
+def _book_option(src) -> discord.SelectOption:
+    return discord.SelectOption(
+        label=src["display_name"][:100], value=str(src["id"]),
+        description=f"{src['size_bytes'] / 1048576:.1f} MB · {src['origin']}"[:100])
+
+
+class RemoveBookModal(discord.ui.Modal):
+    """Pick one of a game's rulebooks from a dropdown; submitting removes it."""
+
+    def __init__(self, game, sources: list):
+        super().__init__(title="Remove a rulebook"[:45], timeout=900)
+        self.game_row = game
+        extra = len(sources) - 25
+        self.book = discord.ui.Label(
+            text=f"Rulebook to remove from {game['name']}"[:45],
+            description=(f"Showing the first 25 of {len(sources)}." if extra > 0
+                         else "It is removed as soon as you submit."),
+            component=discord.ui.Select(placeholder="Choose a rulebook",
+                                        options=[_book_option(s) for s in sources[:25]]))
+        self.add_item(self.book)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        if guild is None or not member_has_user_role(interaction.user, guild):
+            await interaction.response.send_message(
+                _NOT_ALLOWED, ephemeral=True, allowed_mentions=_NO_MENTIONS)
+            return
+        values = self.book.component.values
+        if not values:
+            await interaction.response.send_message(
+                "❌ Choose a rulebook.", ephemeral=True, allowed_mentions=_NO_MENTIONS)
+            return
+        await interaction.response.defer(thinking=True)
+        try:
+            name = await rules_service.remove_source(
+                self.game_row, int(values[0]), str(interaction.user), guild.id)
+            text = f"🗑️ Removed **{name}** from **{self.game_row['name']}**."
+        except RulesError as e:
+            logger.warning("Remove rulebook failed | guild=%s | user=%s | %s",
+                           guild.id, interaction.user.id, e.user_message)
+            text = e.user_message
+        await interaction.followup.send(text, allowed_mentions=_NO_MENTIONS)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        await _form_error(interaction, error)
+
+
 class Rules(commands.Cog):
     """Per-game rulebook uploads and rules Q&A (user role only)."""
 
@@ -166,11 +213,11 @@ class Rules(commands.Cog):
         names = await database.run(database.search_game_names, guild.id, current, 25)
         return [app_commands.Choice(name=n[:100], value=n[:100]) for n in names[:25]]
 
-    @commands.hybrid_group(name="rules", fallback="games",
+    @commands.hybrid_group(name="gamerules", fallback="list",
                            description="List the games that have rulebooks.")
     @commands.guild_only()
     @has_user_role()
-    async def rules(self, ctx):
+    async def gamerules(self, ctx):
         try:
             rows = await database.run(database.list_games, ctx.guild.id)
             await ctx.send(allowed_mentions=_NO_MENTIONS, embed=build_games_embed(rows))
@@ -178,37 +225,10 @@ class Rules(commands.Cog):
             _log_rules_error(ctx, e)
             await ctx.send(e.user_message, allowed_mentions=_NO_MENTIONS)
 
-    @rules.command(name="addgame", description="Create a game and add its rulebooks (opens a form).")
+    @gamerules.command(name="ask", description="Ask a rules question, answered from the game's rulebooks.")
     @commands.guild_only()
     @has_user_role()
-    async def addgame(self, ctx):
-        if ctx.interaction is None:
-            await ctx.send("Use `/rules addgame` — it opens a form.", allowed_mentions=_NO_MENTIONS)
-            return
-        await ctx.interaction.response.send_modal(AddGameModal())
-
-    @rules.command(name="addsource", description="Add rulebooks to a game (opens a form).")
-    @commands.guild_only()
-    @has_user_role()
-    async def addsource(self, ctx):
-        if ctx.interaction is None:
-            await ctx.send("Use `/rules addsource` — it opens a form.", allowed_mentions=_NO_MENTIONS)
-            return
-        try:
-            rows = await database.run(database.list_games, ctx.guild.id)
-        except Exception:
-            logger.error("Listing games failed | guild=%s | user=%s",
-                         ctx.guild.id, ctx.author.id, exc_info=True)
-            raise
-        if not rows:
-            await ctx.send("No games yet. Add one with `/rules addgame`.",
-                           allowed_mentions=_NO_MENTIONS, ephemeral=True)
-            return
-        await ctx.interaction.response.send_modal(AddSourceModal([r["name"] for r in rows]))
-
-    @rules.command(name="ask", description="Ask a rules question answered from a game's rulebooks.")
-    @commands.guild_only()
-    @has_user_role()
+    @app_commands.describe(game="The game to ask about", question="Your rules question")
     async def ask(self, ctx, game: str, *, question: str):
         try:
             await ctx.defer()
@@ -219,10 +239,39 @@ class Rules(commands.Cog):
             _log_rules_error(ctx, e)
             await ctx.send(e.user_message, allowed_mentions=_NO_MENTIONS)
 
-    @rules.command(name="sources", description="List a game's uploaded sources.")
+    @gamerules.command(name="add", description="Add a new game and its rulebooks (opens a form).")
     @commands.guild_only()
     @has_user_role()
-    async def sources(self, ctx, game: str):
+    async def add(self, ctx):
+        if ctx.interaction is None:
+            await ctx.send("Use `/gamerules add` — it opens a form.", allowed_mentions=_NO_MENTIONS)
+            return
+        await ctx.interaction.response.send_modal(AddGameModal())
+
+    @gamerules.command(name="addbook", description="Add rulebooks to an existing game (opens a form).")
+    @commands.guild_only()
+    @has_user_role()
+    async def addbook(self, ctx):
+        if ctx.interaction is None:
+            await ctx.send("Use `/gamerules addbook` — it opens a form.", allowed_mentions=_NO_MENTIONS)
+            return
+        try:
+            rows = await database.run(database.list_games, ctx.guild.id)
+        except Exception:
+            logger.error("Listing games failed | guild=%s | user=%s",
+                         ctx.guild.id, ctx.author.id, exc_info=True)
+            raise
+        if not rows:
+            await ctx.send("No games yet. Add one with `/gamerules add`.",
+                           allowed_mentions=_NO_MENTIONS, ephemeral=True)
+            return
+        await ctx.interaction.response.send_modal(AddSourceModal([r["name"] for r in rows]))
+
+    @gamerules.command(name="books", description="List a game's rulebooks.")
+    @commands.guild_only()
+    @has_user_role()
+    @app_commands.describe(game="The game whose rulebooks to list")
+    async def books(self, ctx, game: str):
         try:
             row = await database.run(rules_service.resolve_game, ctx.guild.id, game)
             rows = await database.run(database.list_sources, row["id"])
@@ -251,56 +300,63 @@ class Rules(commands.Cog):
             return False
         return True
 
-    @rules.command(name="removesource", description="Remove a source from a game.")
+    @gamerules.command(name="removebook", description="Remove a rulebook from a game (opens a form).")
     @commands.guild_only()
     @has_user_role()
-    async def removesource(self, ctx, game: str, source_id: int):
-        try:
-            await ctx.defer()
-            row = await database.run(rules_service.resolve_game, ctx.guild.id, game)
-            if not await self._confirm(
-                    ctx, f"Remove source `#{source_id}` from **{game}**?\nReact ✅ to confirm or ❌ to cancel."):
-                return
-            name = await rules_service.remove_source(row, source_id, str(ctx.author), ctx.guild.id)
-            await ctx.send(f"🗑️ Removed **{name}** from **{row['name']}**.",
+    @app_commands.describe(game="The game the rulebook belongs to")
+    async def removebook(self, ctx, game: str):
+        if ctx.interaction is None:
+            await ctx.send("Use `/gamerules removebook` — it opens a form.",
                            allowed_mentions=_NO_MENTIONS)
+            return
+        # No defer: a modal must be the first response to the interaction.
+        try:
+            row = await database.run(rules_service.resolve_game, ctx.guild.id, game)
+            sources = await database.run(database.list_sources, row["id"])
         except RulesError as e:
             _log_rules_error(ctx, e)
-            await ctx.send(e.user_message, allowed_mentions=_NO_MENTIONS)
+            await ctx.send(e.user_message, allowed_mentions=_NO_MENTIONS, ephemeral=True)
+            return
+        if not sources:
+            await ctx.send(f"**{row['name']}** has no rulebooks to remove.",
+                           allowed_mentions=_NO_MENTIONS, ephemeral=True)
+            return
+        await ctx.interaction.response.send_modal(RemoveBookModal(row, sources))
 
-    @rules.command(name="deletegame", description="Delete a game and all its sources.")
+    @gamerules.command(name="delete", description="Delete a game and all its rulebooks.")
     @commands.guild_only()
     @has_user_role()
-    async def deletegame(self, ctx, game: str):
+    @app_commands.describe(game="The game to delete")
+    async def delete(self, ctx, game: str):
         try:
             await ctx.defer()
             row = await database.run(rules_service.resolve_game, ctx.guild.id, game)
             sources = await database.run(database.list_sources, row["id"])
             if not await self._confirm(
-                    ctx, f"Delete **{row['name']}** and all {len(sources)} of its sources? "
+                    ctx, f"Delete **{row['name']}** and all {len(sources)} of its rulebooks? "
                          "This cannot be undone.\nReact ✅ to confirm or ❌ to cancel."):
                 return
             n = await rules_service.delete_game(row, str(ctx.author), ctx.guild.id)
-            await ctx.send(f"🗑️ Deleted **{row['name']}** ({n} sources).",
+            await ctx.send(f"🗑️ Deleted **{row['name']}** ({n} rulebooks).",
                            allowed_mentions=_NO_MENTIONS)
         except RulesError as e:
             _log_rules_error(ctx, e)
             await ctx.send(e.user_message, allowed_mentions=_NO_MENTIONS)
 
-    @removesource.autocomplete("game")
-    async def _removesource_game_ac(self, interaction: discord.Interaction, current: str):
-        return await self.game_autocomplete(interaction, current)
-
-    @deletegame.autocomplete("game")
-    async def _deletegame_game_ac(self, interaction: discord.Interaction, current: str):
-        return await self.game_autocomplete(interaction, current)
-
     @ask.autocomplete("game")
     async def _ask_game_ac(self, interaction: discord.Interaction, current: str):
         return await self.game_autocomplete(interaction, current)
 
-    @sources.autocomplete("game")
-    async def _sources_game_ac(self, interaction: discord.Interaction, current: str):
+    @books.autocomplete("game")
+    async def _books_game_ac(self, interaction: discord.Interaction, current: str):
+        return await self.game_autocomplete(interaction, current)
+
+    @removebook.autocomplete("game")
+    async def _removebook_game_ac(self, interaction: discord.Interaction, current: str):
+        return await self.game_autocomplete(interaction, current)
+
+    @delete.autocomplete("game")
+    async def _delete_game_ac(self, interaction: discord.Interaction, current: str):
         return await self.game_autocomplete(interaction, current)
 
 

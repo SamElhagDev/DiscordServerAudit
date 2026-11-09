@@ -92,7 +92,7 @@ class RulesServiceTestCase(unittest.IsolatedAsyncioTestCase):
         game = await svc.create_game(1, "Root", 99, store=self.fake)
         with self.assertRaises(RulesError) as cm:
             await svc.ask(game, "How?", store=self.fake)
-        self.assertIn("has no sources yet", cm.exception.user_message)
+        self.assertIn("has no rulebooks yet", cm.exception.user_message)
         self.fake.ask.assert_not_awaited()
 
     async def test_ask_passes_store_and_config(self):
@@ -137,7 +137,7 @@ class RulesServiceTestCase(unittest.IsolatedAsyncioTestCase):
         src = database.list_sources(a["id"])[0]
         with self.assertRaises(RulesError) as cm:
             await svc.remove_source(b, src["id"], "t", 1, store=self.fake)
-        self.assertIn("has no source", cm.exception.user_message)
+        self.assertIn("no longer in", cm.exception.user_message)
         self.fake.delete_document.assert_not_awaited()
 
     async def test_delete_game_deletes_store_then_rows(self):

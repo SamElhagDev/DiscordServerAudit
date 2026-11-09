@@ -46,11 +46,29 @@ _COG_DESCRIPTIONS = {
 }
 
 
+# Footer note on who may run a cog's commands (default: admin role)
+_COG_ACCESS = {
+    "Rules": "🎲  Requires the user role",
+}
+_DEFAULT_ACCESS = "⚠️  Requires admin role"
+
+
 def _usage(prefix: str, cmd: commands.Command) -> str:
     """Build a usage string from a command's signature."""
     if cmd.signature:
         return f"`{prefix}{cmd.qualified_name} {cmd.signature}`"
     return f"`{prefix}{cmd.qualified_name}`"
+
+
+def _summary(cmd: commands.Command) -> str:
+    """Docstring if present, else the slash-command description."""
+    return cmd.help or cmd.description or "No description."
+
+
+def _invoke_prefix(prefix: str, cmd: commands.Command) -> str:
+    """Hybrid groups are shown as slash commands (their forms are slash-only)."""
+    root = cmd.root_parent or cmd
+    return "/" if isinstance(root, commands.HybridGroup) else prefix
 
 
 class RichHelpCommand(commands.HelpCommand):
@@ -84,7 +102,7 @@ class RichHelpCommand(commands.HelpCommand):
             cog_name = cog.qualified_name if cog else "Uncategorised"
             label = _COG_LABELS.get(cog_name, f"📂  {cog_name}")
             description = _COG_DESCRIPTIONS.get(cog_name, "")
-            cmd_list = "  ".join(f"`{prefix}{c.name}`" for c in visible)
+            cmd_list = "  ".join(f"`{_invoke_prefix(prefix, c)}{c.name}`" for c in visible)
 
             embed.add_field(
                 name=label,
@@ -114,12 +132,41 @@ class RichHelpCommand(commands.HelpCommand):
         visible = await self.filter_commands(cog.get_commands(), sort=True)
         for cmd in visible:
             embed.add_field(
-                name=_usage(prefix, cmd),
-                value=cmd.help or "No description.",
+                name=_usage(_invoke_prefix(prefix, cmd), cmd),
+                value=_summary(cmd),
                 inline=False,
             )
 
         embed.set_footer(text=f"Use {prefix}help <command> for full detail")
+        await self.get_destination().send(embed=embed)
+
+    # ------------------------------------------------------------------
+    # Command group  (!help gamerules)
+    # ------------------------------------------------------------------
+    async def send_group_help(self, group: commands.Group):
+        prefix = self.context.clean_prefix
+        shown = _invoke_prefix(prefix, group)
+        cog_name = group.cog.qualified_name if group.cog else ""
+
+        embed = discord.Embed(
+            title=_COG_LABELS.get(cog_name, f"Command: {shown}{group.qualified_name}"),
+            description=_COG_DESCRIPTIONS.get(cog_name, _summary(group)),
+            color=_COG_COLORS.get(cog_name, _DEFAULT_COLOR),
+        )
+
+        # A hybrid group's fallback runs the group itself; list it first under its slash name.
+        fallback = getattr(group, "fallback", None)
+        if fallback:
+            embed.add_field(
+                name=f"`{shown}{group.qualified_name} {fallback}`",
+                value=_summary(group), inline=False,
+            )
+
+        visible = await self.filter_commands(group.commands, sort=False)
+        for cmd in visible:
+            embed.add_field(name=_usage(shown, cmd), value=_summary(cmd), inline=False)
+
+        embed.set_footer(text=_COG_ACCESS.get(cog_name, _DEFAULT_ACCESS))
         await self.get_destination().send(embed=embed)
 
     # ------------------------------------------------------------------
@@ -130,11 +177,12 @@ class RichHelpCommand(commands.HelpCommand):
         cog_name = cmd.cog.qualified_name if cmd.cog else ""
         color = _COG_COLORS.get(cog_name, _DEFAULT_COLOR)
 
-        usage = _usage(prefix, cmd)
+        shown = _invoke_prefix(prefix, cmd)
+        usage = _usage(shown, cmd)
 
         embed = discord.Embed(
-            title=f"Command: {prefix}{cmd.qualified_name}",
-            description=cmd.help or "No description available.",
+            title=f"Command: {shown}{cmd.qualified_name}",
+            description=_summary(cmd),
             color=color,
         )
         embed.add_field(name="Usage", value=usage, inline=False)
@@ -153,7 +201,7 @@ class RichHelpCommand(commands.HelpCommand):
                 inline=True,
             )
 
-        embed.set_footer(text="⚠️  Requires admin role")
+        embed.set_footer(text=_COG_ACCESS.get(cog_name, _DEFAULT_ACCESS))
         await self.get_destination().send(embed=embed)
 
     # ------------------------------------------------------------------

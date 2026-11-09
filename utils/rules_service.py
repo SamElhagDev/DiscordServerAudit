@@ -23,7 +23,7 @@ def resolve_game(guild_id: int, raw_name: str) -> sqlite3.Row:
     name = " ".join((raw_name or "").split())
     game = database.get_game(guild_id, name)
     if game is None:
-        raise RulesError(f"❌ No game named **{name}**. See `/rules games`.")
+        raise RulesError(f"❌ No game named **{name}**. See `/gamerules list`.")
     return game
 
 
@@ -82,7 +82,7 @@ async def ask(game: sqlite3.Row, raw_question: str, *, store=rules_store):
     sources = await database.run(database.list_sources, game["id"])
     if not sources:
         raise RulesError(
-            f"❌ **{game['name']}** has no sources yet. Add one with `/rules addsource`.")
+            f"❌ **{game['name']}** has no rulebooks yet. Add one with `/gamerules addbook`.")
     logger.info("Rules question guild_id=%s game_id=%s sources=%s",
                 game["guild_id"], game["id"], len(sources))
     return await store.ask(
@@ -96,7 +96,7 @@ async def remove_source(game: sqlite3.Row, source_id: int, actor: str, guild_id:
                         store=rules_store) -> str:
     src = await database.run(database.get_source, game["id"], source_id)
     if src is None:
-        raise RulesError(f"❌ **{game['name']}** has no source `#{source_id}`. See `/rules sources`.")
+        raise RulesError(f"❌ That rulebook is no longer in **{game['name']}** — it may already have been removed.")
     # Gemini first: if it fails the row stays so the user can retry.
     await store.delete_document(src["document_name"])
     await database.run(database.delete_source, source_id)

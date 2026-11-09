@@ -1,4 +1,4 @@
-"""Orchestration for the /rules addgame and /rules addsource forms.
+"""Orchestration for the /gamerules add and /gamerules addbook forms.
 
 Plain async logic with simple inputs (attachment-like objects exposing
 ``.filename/.size/.read()`` and a url string) so it is testable without Discord.
@@ -37,7 +37,7 @@ class SubmissionResult:
         lines = []
         for i in self.items:
             lines.append(f"✅ {i.label}" if i.ok else f"❌ {i.label}: {i.detail}")
-        tail = f"Total sources for **{self.game_name}**: {self.total}"
+        tail = f"Total rulebooks for **{self.game_name}**: {self.total}"
         text = "\n".join([head, *lines, tail])
         if len(text) <= MAX_MESSAGE:
             return text

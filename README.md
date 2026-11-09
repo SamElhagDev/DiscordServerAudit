@@ -421,13 +421,13 @@ User-role-only commands for per-game rulebook Q&A. Each game's rulebooks are sto
 
 | Command | Description |
 |---|---|
-| `/rules games` | List games and their source counts |
-| `/rules addgame` | Opens a form: game name, optional rulebook files (up to 10 uploads) and/or a link; creates the game and indexes the rulebooks |
-| `/rules addsource` | Opens a form: pick a game from a dropdown, then attach up to 10 rulebook files and/or paste a public http(s) link (at least one) |
-| `/rules sources <game>` | List a game's sources |
-| `/rules ask <game> <question>` | Ask a rules question; the answer is posted publicly with citations |
-| `/rules removesource <game> <source_id>` | Remove one source from a game (asks for ✅/❌ confirmation) |
-| `/rules deletegame <game>` | Delete a game and all its sources (asks for ✅/❌ confirmation) |
+| `/gamerules list` | List games and how many rulebooks each has |
+| `/gamerules ask <game> <question>` | Ask a rules question; the answer is posted publicly with citations |
+| `/gamerules add` | Opens a form: game name, optional rulebook files (up to 10 uploads) and/or a link; creates the game and indexes the rulebooks |
+| `/gamerules addbook` | Opens a form: pick a game from a dropdown, then attach up to 10 rulebook files and/or paste a public http(s) link (at least one) |
+| `/gamerules books <game>` | List a game's rulebooks with their numbers |
+| `/gamerules removebook <game>` | Opens a form with a dropdown of that game's rulebooks; pick one and submit to remove it |
+| `/gamerules delete <game>` | Delete a game and all its rulebooks (asks for ✅/❌ confirmation) |
 
 - **Access:** requires the configured user role (`user_role`, default `Rancher`; `@has_user_role()`); autocomplete shows nothing to other users. Set the role name with the `user_role` config or the `DiscordServerAudit_USER_ROLE` env var; that role plus the admin role are admitted.
 - **Config:** the `rules:` section in `config.yaml` has these keys:
@@ -443,7 +443,7 @@ User-role-only commands for per-game rulebook Q&A. Each game's rulebooks are sto
 | `rules.max_citations` | `3` | Max citations shown with an answer |
 | `rules.max_question_chars` | `500` | Max length of a question |
 
-- **Forms:** `addgame` and `addsource` take no arguments; they open a Discord form (modal) and work as slash commands only (`!rules addgame` just points you to the slash command). Accepted files are `.pdf .txt .md .docx`, up to 10 per submission, each within `rules.max_source_bytes`. Each file is reported as ✅ or ❌ in a final summary; one bad file doesn't stop the others. The dropdown lists up to 25 games. Forms need `discord.py>=2.7` (file uploads in modals).
+- **Forms:** `add` and `addbook` take no arguments and `removebook` takes only the game; they open a Discord form (modal) and work as slash commands only (`!gamerules add` just points you to the slash command). Accepted files are `.pdf .txt .md .docx`, up to 10 per submission, each within `rules.max_source_bytes`. Each file is reported as ✅ or ❌ in a final summary; one bad file doesn't stop the others. The dropdown lists up to 25 games. Forms need `discord.py>=2.7` (file uploads in modals).
 - **Large rulebooks:** Discord's attachment upload limit may be below the 50 MB `max_source_bytes`, so add large rulebooks by URL instead of as an attachment.
 - **API key:** requires a Gemini Developer API key (the same `DiscordServerAudit_GEMINI_KEY` used elsewhere); File Search is not available through other providers.
 - URLs are fetched with SSRF protection; private, loopback and link-local addresses are rejected.
@@ -452,7 +452,7 @@ User-role-only commands for per-game rulebook Q&A. Each game's rulebooks are sto
 
 ## Access control
 
-Gated commands use the `@has_admin_role()` check in `utils/permissions.py`; the `/rules` commands use `@has_user_role()` instead (the `user_role` config / `DiscordServerAudit_USER_ROLE` env admits that role plus the admin role). It resolves the configured `admin_role` name to a role in the current server and compares by role ID; it fails closed if the role is missing or the name is ambiguous, and it only works in servers (not DMs).
+Gated commands use the `@has_admin_role()` check in `utils/permissions.py`; the `/gamerules` commands use `@has_user_role()` instead (the `user_role` config / `DiscordServerAudit_USER_ROLE` env admits that role plus the admin role). It resolves the configured `admin_role` name to a role in the current server and compares by role ID; it fails closed if the role is missing or the name is ambiguous, and it only works in servers (not DMs).
 
 | Access | Commands |
 |---|---|
