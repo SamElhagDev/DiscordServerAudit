@@ -8,6 +8,9 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# How long a failed task waits before it is tried again (capped at its interval).
+RETRY_AFTER_FAILURE = datetime.timedelta(hours=1)
+
 
 class IntervalScheduler:
     """
@@ -47,14 +50,27 @@ class IntervalScheduler:
         while True:
             now = datetime.datetime.now(datetime.timezone.utc)
             for task in self._tasks:
-                last_run = await database.run(database.get_last_run, task["key"])
-                due = last_run is None or (now - last_run) >= task["interval"]
-                if due:
-                    logger.info(f"Running scheduled task: {task['key']}")
-                    try:
-                        await task["coro_factory"]()
-                        await database.run(database.set_last_run, task["key"])
-                    except Exception as e:
-                        logger.error(f"Scheduled task {task['key']} failed: {e}", exc_info=True)
+                await self._run_if_due(task, now)
 
             await asyncio.sleep(60 * 5)  # Check every 5 minutes
+
+    async def _run_if_due(self, task: dict, now: datetime.datetime) -> None:
+        retry_at = task.get("retry_at")
+        if retry_at is not None and now < retry_at:
+            return
+        last_run = await database.run(database.get_last_run, task["key"])
+        if last_run is not None and (now - last_run) < task["interval"]:
+            return
+        logger.info(f"Running scheduled task: {task['key']}")
+        try:
+            await task["coro_factory"]()
+        except Exception as e:
+            # Without a back-off, a task that fails after posting part of its
+            # output would re-run (and re-post) on every 5-minute tick.
+            delay = min(task["interval"], RETRY_AFTER_FAILURE)
+            task["retry_at"] = now + delay
+            logger.error(f"Scheduled task {task['key']} failed: {e} — retrying in {delay}",
+                         exc_info=True)
+            return
+        task.pop("retry_at", None)
+        await database.run(database.set_last_run, task["key"])

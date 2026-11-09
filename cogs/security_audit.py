@@ -6,7 +6,7 @@ from typing import Optional
 
 import database
 import config
-from utils.permissions import has_admin_role, build_embed, build_findings_embeds
+from utils.permissions import has_admin_role, build_embed, batch_embeds, build_findings_embeds
 from utils.gemini import summarize_findings
 
 logger = logging.getLogger(__name__)
@@ -189,8 +189,8 @@ class SecurityAudit(commands.Cog):
         await channel.send(embed=embed)
 
         detail_embeds = build_findings_embeds("🔒 Security Audit — findings", findings)
-        for i in range(0, len(detail_embeds), 10):
-            await channel.send(embeds=detail_embeds[i:i + 10])
+        for batch in batch_embeds(detail_embeds):
+            await channel.send(embeds=batch)
 
         ai_summary = await summarize_findings(findings, "security")
         if ai_summary:

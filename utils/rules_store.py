@@ -49,10 +49,16 @@ def _client():
     return client
 
 
-def build_config(store_name: str, game_name: str) -> types.GenerateContentConfig:
+def build_config(store_name: str, game_name: str,
+                 thinking_level: str | None = None) -> types.GenerateContentConfig:
+    # Gemini 3 models think at "high" by default, which dominates answer time.
+    # A falsy level leaves the model default in place.
+    thinking = (types.ThinkingConfig(thinking_level=thinking_level.upper())
+                if thinking_level else None)
     return types.GenerateContentConfig(
         system_instruction=SYSTEM_INSTRUCTION.format(game=game_name),
         temperature=0,
+        thinking_config=thinking,
         tools=[types.Tool(file_search=types.FileSearch(
             file_search_store_names=[store_name]))],
     )
@@ -228,14 +234,15 @@ def _extract_chunks(response) -> list:
 
 
 async def ask(store_name: str, game_name: str, question: str, model: str,
-              timeout_s: float, max_citations: int) -> RulesAnswer:
+              timeout_s: float, max_citations: int,
+              thinking_level: str | None = None) -> RulesAnswer:
     client = _client()
     start = time.monotonic()
     try:
         response = await asyncio.wait_for(
             client.aio.models.generate_content(
                 model=model, contents=question,
-                config=build_config(store_name, game_name)),
+                config=build_config(store_name, game_name, thinking_level)),
             timeout=timeout_s)
     except asyncio.TimeoutError:
         logger.warning("Rules lookup timed out for %s after %.2fs", store_name,

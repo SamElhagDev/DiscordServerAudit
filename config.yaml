@@ -122,6 +122,7 @@ factcheck:
 rules:
   enabled: true                    # Master toggle for the game rules feature
   model: "gemini-3.1-pro-preview"  # Pro model, chosen for multi-rule interactions (e.g. Twilight Imperium 4). Must support File Search.
+  thinking_level: "low"            # How hard the model reasons: low (fastest on Pro), medium, high (model default, slowest). "" = model default
   answer_timeout_seconds: 90       # Max seconds to wait for an answer (Pro is slower than Flash)
   index_timeout_seconds: 300       # Max seconds to wait for a source to finish indexing
   max_source_bytes: 52428800       # Max size of a rules source file in bytes (50 MB)

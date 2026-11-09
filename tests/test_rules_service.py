@@ -104,7 +104,8 @@ class RulesServiceTestCase(unittest.IsolatedAsyncioTestCase):
             "fileSearchStores/new", "Catan", "How many dice?",
             config.get("rules.model", "gemini-3.1-pro-preview"),
             config.get("rules.answer_timeout_seconds", 90),
-            config.get("rules.max_citations", 3))
+            config.get("rules.max_citations", 3),
+            thinking_level=config.get("rules.thinking_level", "low"))
 
     def _task_log(self, task_type):
         with connection.get_conn() as conn:

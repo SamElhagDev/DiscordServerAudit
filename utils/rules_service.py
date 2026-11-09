@@ -89,7 +89,8 @@ async def ask(game: sqlite3.Row, raw_question: str, *, store=rules_store):
         game["store_name"], game["name"], question,
         config.get("rules.model", "gemini-3.1-pro-preview"),
         config.get("rules.answer_timeout_seconds", 90),
-        config.get("rules.max_citations", 3))
+        config.get("rules.max_citations", 3),
+        thinking_level=config.get("rules.thinking_level", "low"))
 
 
 async def remove_source(game: sqlite3.Row, source_id: int, actor: str, guild_id: int, *,

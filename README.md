@@ -436,6 +436,7 @@ User-role-only commands for per-game rulebook Q&A. Each game's rulebooks are sto
 |---|---|---|
 | `rules.enabled` | `true` | Master toggle; `false` disables the commands |
 | `rules.model` | `gemini-3.1-pro-preview` | Model used to answer. This is the **Pro** model, chosen for multi-rule interactions; it costs noticeably more per question and is slower than Flash models. Must support File Search |
+| `rules.thinking_level` | `low` | How much the model reasons before answering: `low` (fastest), `medium`, `high` (Gemini's default, slowest). Empty string = model default |
 | `rules.answer_timeout_seconds` | `90` | Max seconds to wait for an answer |
 | `rules.index_timeout_seconds` | `300` | Max seconds to wait for a source to finish indexing |
 | `rules.max_source_bytes` | `52428800` (50 MB) | Max size of a source file |

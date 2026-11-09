@@ -172,6 +172,27 @@ def severity_color(severity: str) -> discord.Color:
 _SEVERITY_RANK = {"critical": 3, "warning": 2, "info": 1}
 
 
+def batch_embeds(embeds: list[discord.Embed], max_chars: int = 6000,
+                 max_count: int = 10) -> list[list[discord.Embed]]:
+    """
+    Group embeds into per-message batches. Discord rejects a message whose
+    embeds total more than 6000 characters combined, or more than 10 embeds.
+    """
+    batches: list[list[discord.Embed]] = []
+    current: list[discord.Embed] = []
+    size = 0
+    for embed in embeds:
+        n = len(embed)
+        if current and (len(current) >= max_count or size + n > max_chars):
+            batches.append(current)
+            current, size = [], 0
+        current.append(embed)
+        size += n
+    if current:
+        batches.append(current)
+    return batches
+
+
 def build_findings_embeds(title: str, findings: list[dict], max_fields: int = 10) -> list[discord.Embed]:
     """
     Pack audit findings into as few embeds as possible instead of one message

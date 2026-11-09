@@ -53,6 +53,12 @@ class InterpretTests(unittest.TestCase):
                          ["fileSearchStores/abc"])
         self.assertIn('"Catan"', cfg.system_instruction)
         self.assertEqual(cfg.temperature, 0)
+        self.assertIsNone(cfg.thinking_config)
+
+    def test_build_config_sets_thinking_level(self):
+        cfg = rs.build_config("fileSearchStores/abc", "Catan", "low")
+        self.assertEqual(cfg.thinking_config.thinking_level, rs.types.ThinkingLevel.LOW)
+        self.assertIsNone(rs.build_config("s", "g", "").thinking_config)
 
 
 class AsyncTests(unittest.IsolatedAsyncioTestCase):
