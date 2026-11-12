@@ -127,8 +127,9 @@ rules:
   index_timeout_seconds: 300       # Max seconds to wait for a source to finish indexing
   max_source_bytes: 52428800       # Max size of a rules source file in bytes (50 MB)
   url_fetch_timeout_seconds: 20    # Seconds to wait when downloading a source URL
-  max_citations: 3                 # Max citations shown with an answer
+  max_citations: 3                 # Max rulebooks cited under an answer (each listed once with its quotes)
   max_question_chars: 500          # Max length of a question
+  storage_dir: "rulebooks"         # Folder (relative to the bot folder) where rulebook copies are kept for /gamerules download
 
 # Performance tuning. Each toggle falls back to pre-006 behavior when disabled.
 performance:

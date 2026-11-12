@@ -7,10 +7,11 @@ from discord.ext import commands
 
 import config
 import database
+from utils import rules_embeds as emb
 from utils import rules_forms, rules_service
-from utils.permissions import build_embed, has_user_role, member_has_user_role
-from utils.rules_embeds import build_answer_embed, build_games_embed, build_sources_embed
+from utils.permissions import has_user_role, member_has_user_role
 from utils.rules_errors import RulesError
+from utils.rules_views import DownloadButton, DownloadView, SourcesButton, answer_view
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,20 @@ def _log_rules_error(ctx, e: RulesError) -> None:
 
 _MAX_FILES = 10
 _NOT_ALLOWED = "❌ You need the user role to use this form."
+
+
+async def _reply_error(ctx, message: str) -> None:
+    """Errors are private on slash commands (ephemeral is ignored for prefix ones)."""
+    await ctx.send(embed=emb.error_embed(message), ephemeral=True, allowed_mentions=_NO_MENTIONS)
+
+
+async def _inter_error(interaction: discord.Interaction, message: str) -> None:
+    embed = emb.error_embed(message)
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=embed, ephemeral=True, allowed_mentions=_NO_MENTIONS)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=True,
+                                                allowed_mentions=_NO_MENTIONS)
 
 
 def _files_field() -> discord.ui.Label:
@@ -48,42 +63,37 @@ async def _handle_submit(interaction: discord.Interaction, *, deferred: bool = F
     """Shared on_submit body: role re-check, defer, progress, final report."""
     guild = interaction.guild
     if guild is None or not member_has_user_role(interaction.user, guild):
-        await interaction.response.send_message(
-            _NOT_ALLOWED, ephemeral=True, allowed_mentions=_NO_MENTIONS)
+        await _inter_error(interaction, _NOT_ALLOWED)
         return
     if not deferred:
         await interaction.response.defer(thinking=True)
     msg = await interaction.followup.send(
-        "Checking your submission…", wait=True, allowed_mentions=_NO_MENTIONS)
+        embed=emb.build_progress_embed("Checking your submission…"), wait=True,
+        allowed_mentions=_NO_MENTIONS)
 
     async def progress(text: str) -> None:
-        await msg.edit(content=text, allowed_mentions=_NO_MENTIONS)
+        await msg.edit(embed=emb.build_progress_embed(text), allowed_mentions=_NO_MENTIONS)
 
     try:
         result = await rules_forms.process_submission(
             guild.id, interaction.user.id, progress=progress, **kwargs)
-        text = result.render()
+        embed = emb.build_submission_embed(result)
     except RulesError as e:
         logger.warning("Rules form failed | guild=%s | user=%s | %s",
                        guild.id, interaction.user.id, e.user_message)
-        text = e.user_message
+        embed = emb.error_embed(e.user_message)
     except Exception:
         logger.error("Rules form error | guild=%s | user=%s", guild.id, interaction.user.id,
                      exc_info=True)
-        text = "❌ Something went wrong adding that. The error has been logged."
-    await msg.edit(content=text, allowed_mentions=_NO_MENTIONS)
+        embed = emb.error_embed("Something went wrong adding that. The error has been logged.")
+    await msg.edit(content=None, embed=embed, allowed_mentions=_NO_MENTIONS)
 
 
 async def _form_error(interaction: discord.Interaction, error: Exception) -> None:
     logger.error("Rules form crashed | guild=%s | user=%s: %s",
                  getattr(interaction.guild, "id", None),
                  getattr(interaction.user, "id", None), error, exc_info=error)
-    text = "❌ Something went wrong. Check the logs."
-    if interaction.response.is_done():
-        await interaction.followup.send(text, ephemeral=True, allowed_mentions=_NO_MENTIONS)
-    else:
-        await interaction.response.send_message(text, ephemeral=True,
-                                                allowed_mentions=_NO_MENTIONS)
+    await _inter_error(interaction, "Something went wrong. The error has been logged.")
 
 
 class AddGameModal(discord.ui.Modal, title="Add a game"):
@@ -120,19 +130,18 @@ class AddSourceModal(discord.ui.Modal, title="Add rulebooks to a game"):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
         if guild is None or not member_has_user_role(interaction.user, guild):
-            await interaction.response.send_message(
-                _NOT_ALLOWED, ephemeral=True, allowed_mentions=_NO_MENTIONS)
+            await _inter_error(interaction, _NOT_ALLOWED)
             return
         values = self.game.component.values
         if not values:
-            await interaction.response.send_message(
-                "❌ Choose a game.", ephemeral=True, allowed_mentions=_NO_MENTIONS)
+            await _inter_error(interaction, "Choose a game.")
             return
         await interaction.response.defer(thinking=True)
         try:
             row = await database.run(rules_service.resolve_game, guild.id, values[0])
         except RulesError as e:
-            await interaction.followup.send(e.user_message, allowed_mentions=_NO_MENTIONS)
+            await interaction.followup.send(embed=emb.error_embed(e.user_message),
+                                            allowed_mentions=_NO_MENTIONS)
             return
         await _handle_submit(
             interaction, deferred=True, game=row, files=list(self.files.component.values),
@@ -143,16 +152,17 @@ class AddSourceModal(discord.ui.Modal, title="Add rulebooks to a game"):
 
 
 def _book_option(src) -> discord.SelectOption:
+    origin = "link" if src["origin"] == "url" else "upload"
     return discord.SelectOption(
-        label=src["display_name"][:100], value=str(src["id"]),
-        description=f"{src['size_bytes'] / 1048576:.1f} MB · {src['origin']}"[:100])
+        label=src["display_name"][:100], value=str(src["id"]), emoji="📄",
+        description=f"{emb._mb(src['size_bytes'])} · {origin}"[:100])
 
 
 class RemoveBookModal(discord.ui.Modal):
     """Pick one of a game's rulebooks from a dropdown; submitting removes it."""
 
     def __init__(self, game, sources: list):
-        super().__init__(title="Remove a rulebook"[:45], timeout=900)
+        super().__init__(title="Remove a rulebook", timeout=900)
         self.game_row = game
         extra = len(sources) - 25
         self.book = discord.ui.Label(
@@ -166,24 +176,23 @@ class RemoveBookModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
         if guild is None or not member_has_user_role(interaction.user, guild):
-            await interaction.response.send_message(
-                _NOT_ALLOWED, ephemeral=True, allowed_mentions=_NO_MENTIONS)
+            await _inter_error(interaction, _NOT_ALLOWED)
             return
         values = self.book.component.values
         if not values:
-            await interaction.response.send_message(
-                "❌ Choose a rulebook.", ephemeral=True, allowed_mentions=_NO_MENTIONS)
+            await _inter_error(interaction, "Choose a rulebook.")
             return
         await interaction.response.defer(thinking=True)
         try:
             name = await rules_service.remove_source(
                 self.game_row, int(values[0]), str(interaction.user), guild.id)
-            text = f"🗑️ Removed **{name}** from **{self.game_row['name']}**."
+            embed = emb.removed_embed("Rulebook removed",
+                                      f"**{name}** was removed from **{self.game_row['name']}**.")
         except RulesError as e:
             logger.warning("Remove rulebook failed | guild=%s | user=%s | %s",
                            guild.id, interaction.user.id, e.user_message)
-            text = e.user_message
-        await interaction.followup.send(text, allowed_mentions=_NO_MENTIONS)
+            embed = emb.error_embed(e.user_message)
+        await interaction.followup.send(embed=embed, allowed_mentions=_NO_MENTIONS)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         await _form_error(interaction, error)
@@ -195,11 +204,19 @@ class Rules(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    async def cog_load(self):
+        # Answer buttons carry their ids in custom_id, so they work after a restart.
+        self.bot.add_dynamic_items(SourcesButton, DownloadButton)
+        logger.info("Registered persistent game-rules answer buttons")
+
+    async def cog_unload(self):
+        self.bot.remove_dynamic_items(SourcesButton, DownloadButton)
+
     async def cog_check(self, ctx):
         if config.get("rules.enabled", True):
             return True
-        await ctx.send("❌ Game rules are disabled in config.yaml.",
-                           allowed_mentions=_NO_MENTIONS)
+        await ctx.send(embed=emb.error_embed("Game rules are disabled in config.yaml."),
+                       allowed_mentions=_NO_MENTIONS)
         return False
 
     async def game_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -220,24 +237,40 @@ class Rules(commands.Cog):
     async def gamerules(self, ctx):
         try:
             rows = await database.run(database.list_games, ctx.guild.id)
-            await ctx.send(allowed_mentions=_NO_MENTIONS, embed=build_games_embed(rows))
+            await ctx.send(allowed_mentions=_NO_MENTIONS, embed=emb.build_games_embed(rows))
         except RulesError as e:
             _log_rules_error(ctx, e)
-            await ctx.send(e.user_message, allowed_mentions=_NO_MENTIONS)
+            await _reply_error(ctx, e.user_message)
 
     @gamerules.command(name="ask", description="Ask a rules question, answered from the game's rulebooks.")
     @commands.guild_only()
     @has_user_role()
     @app_commands.describe(game="The game to ask about", question="Your rules question")
     async def ask(self, ctx, game: str, *, question: str):
+        # Cheap checks first, so a typo'd game gets a private error, not a public one.
         try:
-            await ctx.defer()
             row = await database.run(rules_service.resolve_game, ctx.guild.id, game)
-            answer = await rules_service.ask(row, question)
-            await ctx.send(allowed_mentions=_NO_MENTIONS, embed=build_answer_embed(row["name"], question, answer))
+            if not await database.run(database.list_sources, row["id"]):
+                raise RulesError(f"❌ **{row['name']}** has no rulebooks yet. "
+                                 "Add one with `/gamerules addbook`.")
         except RulesError as e:
             _log_rules_error(ctx, e)
-            await ctx.send(e.user_message, allowed_mentions=_NO_MENTIONS)
+            await _reply_error(ctx, e.user_message)
+            return
+        try:
+            await ctx.defer()
+            answer = await rules_service.ask(row, question)
+        except RulesError as e:
+            _log_rules_error(ctx, e)
+            await ctx.send(embed=emb.error_embed(e.user_message), allowed_mentions=_NO_MENTIONS)
+            return
+        embed = emb.build_answer_embed(row["name"], question, answer,
+                                       asked_by=getattr(ctx.author, "display_name", None))
+        view = None
+        if answer.found:
+            answer_id = await rules_service.save_answer(ctx.guild.id, row, question, answer)
+            view = answer_view(answer_id, row["id"], bool(answer.citations))
+        await ctx.send(embed=embed, view=view, allowed_mentions=_NO_MENTIONS)
 
     @gamerules.command(name="add", description="Add a new game and its rulebooks (opens a form).")
     @commands.guild_only()
@@ -275,14 +308,29 @@ class Rules(commands.Cog):
         try:
             row = await database.run(rules_service.resolve_game, ctx.guild.id, game)
             rows = await database.run(database.list_sources, row["id"])
-            await ctx.send(allowed_mentions=_NO_MENTIONS, embed=build_sources_embed(row["name"], rows))
+            kinds = {r["id"]: rules_service.download_target(r)[0] for r in rows}
+            await ctx.send(allowed_mentions=_NO_MENTIONS,
+                           embed=emb.build_sources_embed(row["name"], rows, kinds))
         except RulesError as e:
             _log_rules_error(ctx, e)
-            await ctx.send(e.user_message, allowed_mentions=_NO_MENTIONS)
+            await _reply_error(ctx, e.user_message)
 
-    async def _confirm(self, ctx, prompt: str) -> bool:
+    @gamerules.command(name="download", description="Download a rulebook (pick a game, then a book).")
+    @commands.guild_only()
+    @has_user_role()
+    async def download(self, ctx):
+        if ctx.interaction is None:
+            await ctx.send("Use `/gamerules download` — it opens a private picker.",
+                           allowed_mentions=_NO_MENTIONS)
+            return
+        view = await DownloadView.for_guild(ctx.author.id, ctx.guild.id)
+        await ctx.send(embed=view.intro_embed(), view=view, ephemeral=True,
+                       allowed_mentions=_NO_MENTIONS)
+
+    async def _confirm(self, ctx, title: str, prompt: str) -> bool:
         """React-to-confirm (30 s, author only). Edits the prompt to Cancelled otherwise."""
-        msg = await ctx.send(allowed_mentions=_NO_MENTIONS, embed=build_embed("⚠️ Confirm", prompt, discord.Color.orange()))
+        msg = await ctx.send(allowed_mentions=_NO_MENTIONS, embed=emb.confirm_embed(
+            title, f"{prompt}\n\nReact ✅ to confirm or ❌ to cancel (30 seconds)."))
         await msg.add_reaction("✅")
         await msg.add_reaction("❌")
 
@@ -293,10 +341,11 @@ class Rules(commands.Cog):
         try:
             reaction, _ = await self.bot.wait_for("reaction_add", timeout=30.0, check=check)
         except asyncio.TimeoutError:
-            await msg.edit(allowed_mentions=_NO_MENTIONS, embed=build_embed("Cancelled", "Timed out.", discord.Color.greyple()))
+            await msg.edit(allowed_mentions=_NO_MENTIONS,
+                           embed=emb.cancelled_embed("Timed out. Nothing was changed."))
             return False
         if str(reaction.emoji) == "❌":
-            await msg.edit(allowed_mentions=_NO_MENTIONS, embed=build_embed("Cancelled", "Cancelled.", discord.Color.greyple()))
+            await msg.edit(allowed_mentions=_NO_MENTIONS, embed=emb.cancelled_embed())
             return False
         return True
 
@@ -315,11 +364,10 @@ class Rules(commands.Cog):
             sources = await database.run(database.list_sources, row["id"])
         except RulesError as e:
             _log_rules_error(ctx, e)
-            await ctx.send(e.user_message, allowed_mentions=_NO_MENTIONS, ephemeral=True)
+            await _reply_error(ctx, e.user_message)
             return
         if not sources:
-            await ctx.send(f"**{row['name']}** has no rulebooks to remove.",
-                           allowed_mentions=_NO_MENTIONS, ephemeral=True)
+            await _reply_error(ctx, f"**{row['name']}** has no rulebooks to remove.")
             return
         await ctx.interaction.response.send_modal(RemoveBookModal(row, sources))
 
@@ -329,19 +377,25 @@ class Rules(commands.Cog):
     @app_commands.describe(game="The game to delete")
     async def delete(self, ctx, game: str):
         try:
-            await ctx.defer()
             row = await database.run(rules_service.resolve_game, ctx.guild.id, game)
-            sources = await database.run(database.list_sources, row["id"])
-            if not await self._confirm(
-                    ctx, f"Delete **{row['name']}** and all {len(sources)} of its rulebooks? "
-                         "This cannot be undone.\nReact ✅ to confirm or ❌ to cancel."):
-                return
-            n = await rules_service.delete_game(row, str(ctx.author), ctx.guild.id)
-            await ctx.send(f"🗑️ Deleted **{row['name']}** ({n} rulebooks).",
-                           allowed_mentions=_NO_MENTIONS)
         except RulesError as e:
             _log_rules_error(ctx, e)
-            await ctx.send(e.user_message, allowed_mentions=_NO_MENTIONS)
+            await _reply_error(ctx, e.user_message)
+            return
+        try:
+            await ctx.defer()
+            sources = await database.run(database.list_sources, row["id"])
+            if not await self._confirm(
+                    ctx, f"Delete {row['name']}?",
+                    f"This deletes **{row['name']}** and all "
+                    f"{emb._plural(len(sources), 'rulebook')}. It cannot be undone."):
+                return
+            n = await rules_service.delete_game(row, str(ctx.author), ctx.guild.id)
+            await ctx.send(allowed_mentions=_NO_MENTIONS, embed=emb.removed_embed(
+                "Game deleted", f"**{row['name']}** and {emb._plural(n, 'rulebook')} were deleted."))
+        except RulesError as e:
+            _log_rules_error(ctx, e)
+            await ctx.send(embed=emb.error_embed(e.user_message), allowed_mentions=_NO_MENTIONS)
 
     @ask.autocomplete("game")
     async def _ask_game_ac(self, interaction: discord.Interaction, current: str):

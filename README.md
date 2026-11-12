@@ -422,10 +422,11 @@ User-role-only commands for per-game rulebook Q&A. Each game's rulebooks are sto
 | Command | Description |
 |---|---|
 | `/gamerules list` | List games and how many rulebooks each has |
-| `/gamerules ask <game> <question>` | Ask a rules question; the answer is posted publicly with citations |
+| `/gamerules ask <game> <question>` | Ask a rules question; posts one answer card naming the rulebooks it came from, with **📖 Show sources** (the quoted passages, shown only to you) and **📥 Download rulebook** buttons |
 | `/gamerules add` | Opens a form: game name, optional rulebook files (up to 10 uploads) and/or a link; creates the game and indexes the rulebooks |
 | `/gamerules addbook` | Opens a form: pick a game from a dropdown, then attach up to 10 rulebook files and/or paste a public http(s) link (at least one) |
-| `/gamerules books <game>` | List a game's rulebooks with their numbers |
+| `/gamerules books <game>` | List a game's rulebooks with size, origin and whether a copy can be downloaded |
+| `/gamerules download` | Private picker: choose a game, then a rulebook, and the bot sends you the file |
 | `/gamerules removebook <game>` | Opens a form with a dropdown of that game's rulebooks; pick one and submit to remove it |
 | `/gamerules delete <game>` | Delete a game and all its rulebooks (asks for ✅/❌ confirmation) |
 
@@ -441,10 +442,13 @@ User-role-only commands for per-game rulebook Q&A. Each game's rulebooks are sto
 | `rules.index_timeout_seconds` | `300` | Max seconds to wait for a source to finish indexing |
 | `rules.max_source_bytes` | `52428800` (50 MB) | Max size of a source file |
 | `rules.url_fetch_timeout_seconds` | `20` | Seconds to wait when downloading a source URL |
-| `rules.max_citations` | `3` | Max citations shown with an answer |
+| `rules.max_citations` | `3` | Max rulebooks cited under an answer. Each rulebook is listed once, with up to 5 quoted passages that the answer actually used |
 | `rules.max_question_chars` | `500` | Max length of a question |
+| `rules.storage_dir` | `rulebooks` | Folder (relative to the bot folder, or absolute) where a copy of each rulebook is kept for `/gamerules download` |
 
 - **Forms:** `add` and `addbook` take no arguments and `removebook` takes only the game; they open a Discord form (modal) and work as slash commands only (`!gamerules add` just points you to the slash command). Accepted files are `.pdf .txt .md .docx`, up to 10 per submission, each within `rules.max_source_bytes`. Each file is reported as ✅ or ❌ in a final summary; one bad file doesn't stop the others. The dropdown lists up to 25 games. Forms need `discord.py>=2.7` (file uploads in modals).
+- **Downloads:** Gemini File Search keeps only a searchable index, so the bot saves its own copy of each rulebook in `rules.storage_dir` (removed with the rulebook or game). Rulebooks added before downloads existed have no copy: link-added ones return their link, uploaded ones show ⚠️ and must be re-added with `/gamerules addbook` to become downloadable. Files over the server's Discord upload limit (10 MB unless boosted) can't be sent.
+- **Answer buttons:** the buttons on an answer keep working after a restart. The quotes behind each answer are stored in the `rules_answers` table for 90 days; after that, **Show sources** says the answer has expired.
 - **Large rulebooks:** Discord's attachment upload limit may be below the 50 MB `max_source_bytes`, so add large rulebooks by URL instead of as an attachment.
 - **API key:** requires a Gemini Developer API key (the same `DiscordServerAudit_GEMINI_KEY` used elsewhere); File Search is not available through other providers.
 - URLs are fetched with SSRF protection; private, loopback and link-local addresses are rejected.

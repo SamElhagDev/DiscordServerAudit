@@ -88,6 +88,44 @@ def delete_source(source_id: int) -> bool:
         return conn.execute("DELETE FROM rules_sources WHERE id = ?", (source_id,)).rowcount > 0
 
 
+def get_game_by_id(guild_id: int, game_id: int):
+    """Game by id, scoped to the guild so a forged id can't reach another server."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM rules_games WHERE id = ? AND guild_id = ?", (game_id, guild_id)
+        ).fetchone()
+
+
+def set_source_file(source_id: int, file_path: str | None) -> None:
+    with get_conn() as conn:
+        conn.execute("UPDATE rules_sources SET file_path = ? WHERE id = ?", (file_path, source_id))
+
+
+ANSWER_RETENTION_DAYS = 90
+
+
+def save_answer(guild_id: int, game_id: int, question: str, citations_json: str) -> int:
+    """Store an answer's citations; prunes rows older than ANSWER_RETENTION_DAYS."""
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM rules_answers WHERE created_at < strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)",
+            (f"-{ANSWER_RETENTION_DAYS} days",),
+        )
+        cur = conn.execute(
+            "INSERT INTO rules_answers (guild_id, game_id, question, citations, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (guild_id, game_id, question, citations_json, _now()),
+        )
+        return cur.lastrowid
+
+
+def get_answer(guild_id: int, answer_id: int):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM rules_answers WHERE id = ? AND guild_id = ?", (answer_id, guild_id)
+        ).fetchone()
+
+
 def delete_game(game_id: int) -> int:
     with get_conn() as conn:
         removed = conn.execute(

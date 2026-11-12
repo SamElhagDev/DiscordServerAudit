@@ -3,12 +3,15 @@
 Sits between the DB, input validation, and the Gemini File Search wrapper. The
 cog stays presentation-only. ``store`` is injectable so tests need no network.
 """
+import asyncio
+import json
 import logging
 import sqlite3
+from dataclasses import asdict
 
 import config
 import database
-from utils import rules_store
+from utils import rules_files, rules_store
 from utils.rules_errors import RulesError
 from utils.rules_ingest import validate_game_name, validate_question
 
@@ -71,6 +74,14 @@ async def add_source(game: sqlite3.Row, data: bytes, filename: str, mime: str,
             logger.error("Failed to clean up document %s guild_id=%s game_id=%s user_id=%s",
                          document_name, game["guild_id"], game["id"], user_id, exc_info=True)
         raise
+    # Keep a local copy for /gamerules download. A failure here only costs the
+    # download: the rulebook is already indexed and answers still use it.
+    try:
+        rel = await asyncio.to_thread(rules_files.save, game["id"], source_id, filename, data)
+        await database.run(database.set_source_file, source_id, rel)
+    except Exception:
+        logger.error("Saving rulebook copy failed guild_id=%s game_id=%s source_id=%s",
+                     game["guild_id"], game["id"], source_id, exc_info=True)
     count = len(await database.run(database.list_sources, game["id"]))
     logger.info("Source added guild_id=%s game_id=%s user_id=%s source_id=%s count=%s",
                 game["guild_id"], game["id"], user_id, source_id, count)
@@ -101,6 +112,7 @@ async def remove_source(game: sqlite3.Row, source_id: int, actor: str, guild_id:
     # Gemini first: if it fails the row stays so the user can retry.
     await store.delete_document(src["document_name"])
     await database.run(database.delete_source, source_id)
+    await asyncio.to_thread(rules_files.delete, src["file_path"])
     await database.run(database.log_bulk_task, "rules_remove_source", actor, guild_id,
                        f"game={game['name']} source=#{source_id} {src['display_name']}")
     logger.info("Source removed guild_id=%s game_id=%s source_id=%s", guild_id, game["id"], source_id)
@@ -111,7 +123,42 @@ async def delete_game(game: sqlite3.Row, actor: str, guild_id: int, *,
                       store=rules_store) -> int:
     await store.delete_store(game["store_name"])
     n = await database.run(database.delete_game, game["id"])
+    await asyncio.to_thread(rules_files.delete_game_dir, game["id"])
     await database.run(database.log_bulk_task, "rules_delete_game", actor, guild_id,
                        f"game={game['name']} sources={n}")
     logger.info("Game deleted guild_id=%s game_id=%s sources=%s", guild_id, game["id"], n)
     return n
+
+
+async def save_answer(guild_id: int, game: sqlite3.Row, question: str, answer) -> int | None:
+    """Persist an answer's citations for its "Show sources" button.
+
+    Returns the answer id, or None if saving failed (the answer is still posted,
+    just without the button).
+    """
+    try:
+        payload = json.dumps([asdict(c) for c in answer.citations])
+        return await database.run(database.save_answer, guild_id, game["id"], question, payload)
+    except Exception:
+        logger.error("Saving answer citations failed guild_id=%s game_id=%s",
+                     guild_id, game["id"], exc_info=True)
+        return None
+
+
+async def load_answer(guild_id: int, answer_id: int):
+    """(question, game_id, [Citation]) for a saved answer, or None if it expired."""
+    row = await database.run(database.get_answer, guild_id, answer_id)
+    if row is None:
+        return None
+    cites = [rules_store.Citation(**c) for c in json.loads(row["citations"])]
+    return row["question"], row["game_id"], cites
+
+
+def download_target(src) -> tuple[str, str | None]:
+    """How a rulebook can be handed back: ("file", path), ("link", url) or ("none", None)."""
+    path = rules_files.existing_path(src["file_path"])
+    if path:
+        return "file", path
+    if src["origin"] == "url" and src["origin_ref"]:
+        return "link", src["origin_ref"]
+    return "none", None

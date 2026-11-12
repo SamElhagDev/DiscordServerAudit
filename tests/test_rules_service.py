@@ -1,5 +1,6 @@
 """Tests for utils.rules_service against a temp SQLite DB and a fake store."""
 import os
+import shutil
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import database
 from database import connection
 from utils import rules_service as svc
 from utils.rules_errors import RulesError
+from utils.rules_store import Citation, RulesAnswer
 
 
 async def _inline_run(fn, *args, **kwargs):
@@ -29,6 +31,11 @@ class RulesServiceTestCase(unittest.IsolatedAsyncioTestCase):
         run_patch = patch("database.run", _inline_run)
         run_patch.start()
         self.addCleanup(run_patch.stop)
+        self._files_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self._files_dir, ignore_errors=True)
+        root_patch = patch("utils.rules_files.storage_root", return_value=self._files_dir)
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
         self.fake = SimpleNamespace(
             create_store=AsyncMock(return_value="fileSearchStores/new"),
             upload_document=AsyncMock(return_value="fileSearchStores/new/documents/d1"),
@@ -158,3 +165,60 @@ class RulesServiceTestCase(unittest.IsolatedAsyncioTestCase):
     def test_resolve_game_found(self):
         database.create_game(1, "Catan", "s", 1)
         self.assertEqual(svc.resolve_game(1, "catan")["name"], "Catan")
+
+    # --- local rulebook copies -------------------------------------------
+
+    async def test_add_source_keeps_a_downloadable_copy(self):
+        game = await svc.create_game(1, "Catan", 99, store=self.fake)
+        await svc.add_source(game, b"%PDF-1", "Rules.pdf", "application/pdf",
+                             "upload", "Rules.pdf", 5, store=self.fake)
+        src = database.list_sources(game["id"])[0]
+        self.assertEqual(src["file_path"], f"{game['id']}/{src['id']}.pdf")
+        kind, path = svc.download_target(src)
+        self.assertEqual(kind, "file")
+        with open(path, "rb") as fh:
+            self.assertEqual(fh.read(), b"%PDF-1")
+
+    async def test_copy_failure_still_adds_rulebook(self):
+        game = await svc.create_game(1, "Catan", 99, store=self.fake)
+        with patch("utils.rules_files.save", side_effect=OSError("disk full")), \
+                self.assertLogs("utils.rules_service", level="ERROR"):
+            count = await svc.add_source(game, b"x", "a.txt", "text/plain", "upload", "a.txt", 5,
+                                         store=self.fake)
+        self.assertEqual(count, 1)
+        self.assertIsNone(database.list_sources(game["id"])[0]["file_path"])
+
+    async def test_remove_source_deletes_copy(self):
+        game = await svc.create_game(1, "Catan", 99, store=self.fake)
+        await self._add(game)
+        src = database.list_sources(game["id"])[0]
+        path = svc.download_target(src)[1]
+        await svc.remove_source(game, src["id"], "t", 1, store=self.fake)
+        self.assertFalse(os.path.exists(path))
+
+    async def test_delete_game_deletes_its_folder(self):
+        game = await svc.create_game(1, "Catan", 99, store=self.fake)
+        await self._add(game, 2)
+        await svc.delete_game(game, "t", 1, store=self.fake)
+        self.assertFalse(os.path.exists(os.path.join(self._files_dir, str(game["id"]))))
+
+    async def test_answer_citations_round_trip_and_are_guild_scoped(self):
+        game = await svc.create_game(1, "Catan", 99, store=self.fake)
+        answer = RulesAnswer("A", [Citation("Base", ["q1", "q2"])], True)
+        aid = await svc.save_answer(1, game, "How?", answer)
+        question, game_id, cites = await svc.load_answer(1, aid)
+        self.assertEqual((question, game_id), ("How?", game["id"]))
+        self.assertEqual(cites, [Citation("Base", ["q1", "q2"])])
+        self.assertIsNone(await svc.load_answer(2, aid))
+
+    def test_old_answers_pruned(self):
+        old = database.save_answer(1, 1, "old", "[]")
+        with database.connection.get_conn() as conn:
+            conn.execute("UPDATE rules_answers SET created_at = '2000-01-01T00:00:00' WHERE id = ?", (old,))
+        database.save_answer(1, 1, "new", "[]")
+        self.assertIsNone(database.get_answer(1, old))
+
+    def test_game_by_id_is_guild_scoped(self):
+        gid = database.create_game(1, "Catan", "s", 1)
+        self.assertEqual(database.get_game_by_id(1, gid)["name"], "Catan")
+        self.assertIsNone(database.get_game_by_id(2, gid))

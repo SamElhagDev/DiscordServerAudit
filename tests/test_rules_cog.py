@@ -7,6 +7,7 @@ from discord.ext import commands
 
 from cogs.rules import AddGameModal, AddSourceModal, RemoveBookModal, Rules
 from utils.rules_errors import RulesError
+from utils.rules_forms import ItemResult, SubmissionResult
 
 
 def _ctx():
@@ -57,7 +58,10 @@ class AddSourceTests(unittest.IsolatedAsyncioTestCase):
         ctx = _ctx()
         with patch("cogs.rules.database.run", new=AsyncMock(side_effect=RulesError("no such game"))):
             await cog.ask.callback(cog, ctx, "G", question="q")
-        ctx.send.assert_awaited_with("no such game", allowed_mentions=ANY)
+        kw = ctx.send.await_args.kwargs
+        self.assertEqual(kw["embed"].description, "❌ no such game")
+        self.assertTrue(kw["ephemeral"])
+        ctx.defer.assert_not_awaited()
 
     async def test_rules_error_send_suppresses_mentions(self):
         cog = Rules(SimpleNamespace())
@@ -81,7 +85,8 @@ class AddSourceTests(unittest.IsolatedAsyncioTestCase):
                 patch("cogs.rules.rules_service.resolve_game", return_value=row):
             await cog.delete.callback(cog, ctx, "stored name")
         self.assertIn("Stored Name", confirm.await_args.args[1])
-        self.assertNotIn("stored name", confirm.await_args.args[1])
+        self.assertIn("Stored Name", confirm.await_args.args[2])
+        self.assertNotIn("stored name", confirm.await_args.args[2])
 
 
 class ErrorLoggingAndDeferTests(unittest.IsolatedAsyncioTestCase):
@@ -103,8 +108,9 @@ class RegistrationTests(unittest.IsolatedAsyncioTestCase):
         await rules.setup(bot)
         group = bot.tree.get_command("gamerules")
         names = {c.name for c in group.commands}
-        self.assertEqual(names, {"list", "add", "addbook", "ask", "books", "removebook", "delete"})
-        for n in ("add", "addbook"):
+        self.assertEqual(names, {"list", "add", "addbook", "ask", "books", "removebook", "delete",
+                                 "download"})
+        for n in ("add", "addbook", "download"):
             self.assertEqual(list(group.get_command(n).parameters), [])
         for n in ("ask", "books", "removebook", "delete"):
             sub = group.get_command(n)
@@ -129,7 +135,7 @@ class RegistrationTests(unittest.IsolatedAsyncioTestCase):
         embed = dest.send.await_args.kwargs["embed"]
         names = [f.name for f in embed.fields]
         self.assertEqual(names[0], "`/gamerules list`")
-        for sub in ("ask", "add", "addbook", "books", "removebook", "delete"):
+        for sub in ("ask", "add", "addbook", "books", "download", "removebook", "delete"):
             self.assertTrue(any(n.startswith(f"`/gamerules {sub}") for n in names), sub)
         self.assertNotIn("No description.", [f.value for f in embed.fields])
         self.assertIn("user role", embed.footer.text)
@@ -146,7 +152,8 @@ def _inter(msg=None):
     msg = msg or SimpleNamespace(edit=AsyncMock())
     return SimpleNamespace(
         guild=SimpleNamespace(id=1), user=SimpleNamespace(id=2),
-        response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock(),
+                                 is_done=lambda: False),
         followup=SimpleNamespace(send=AsyncMock(return_value=msg)), msg=msg)
 
 
@@ -216,7 +223,7 @@ class ModalSubmitTests(unittest.IsolatedAsyncioTestCase):
     async def test_addgame_submit_passes_inputs_and_reports(self):
         inter = _inter()
         f = SimpleNamespace(filename="a.pdf", size=1)
-        res = SimpleNamespace(render=lambda: "DONE")
+        res = SubmissionResult("Catan", [ItemResult("a.pdf", True)], 1)
         with patch("cogs.rules.member_has_user_role", return_value=True), \
                 patch("cogs.rules.rules_forms.process_submission",
                       new=AsyncMock(return_value=res)) as proc:
@@ -225,8 +232,12 @@ class ModalSubmitTests(unittest.IsolatedAsyncioTestCase):
         kw = proc.await_args.kwargs
         self.assertEqual((kw["game_name"], kw["files"], kw["url"]),
                          ("Catan", [f], "https://x"))
-        self.assertEqual(inter.msg.edit.await_args.kwargs["content"], "DONE")
-        self.assertIn("allowed_mentions", inter.msg.edit.await_args.kwargs)
+        final = inter.msg.edit.await_args.kwargs
+        self.assertEqual(final["embed"].description, "✅ a.pdf")
+        self.assertIsNone(final["content"])
+        self.assertIn("allowed_mentions", final)
+        first = inter.followup.send.await_args.kwargs["embed"]
+        self.assertIn("Checking your submission", first.description)
 
     async def test_submit_error_shown(self):
         inter = _inter()
@@ -234,7 +245,7 @@ class ModalSubmitTests(unittest.IsolatedAsyncioTestCase):
                 patch("cogs.rules.rules_forms.process_submission",
                       new=AsyncMock(side_effect=RulesError("dup"))):
             await self._gamemodal().on_submit(inter)
-        self.assertEqual(inter.msg.edit.await_args.kwargs["content"], "dup")
+        self.assertEqual(inter.msg.edit.await_args.kwargs["embed"].description, "❌ dup")
 
     async def test_unexpected_error_edits_progress_message_and_logs(self):
         inter = _inter()
@@ -247,7 +258,7 @@ class ModalSubmitTests(unittest.IsolatedAsyncioTestCase):
             await self._gamemodal().on_submit(inter)
         add.assert_not_awaited()
         edit = inter.msg.edit.await_args.kwargs
-        self.assertEqual(edit["content"],
+        self.assertEqual(edit["embed"].description,
                          "❌ Something went wrong adding that. The error has been logged.")
         self.assertFalse(edit["allowed_mentions"].everyone)
         self.assertIn("guild=1", cm.output[0])
@@ -261,7 +272,7 @@ class ModalSubmitTests(unittest.IsolatedAsyncioTestCase):
                 patch("cogs.rules.database.run", new=AsyncMock()) as run:
             await m.on_submit(inter)
         run.assert_not_awaited()
-        self.assertIn("Choose a game", inter.response.send_message.await_args.args[0])
+        self.assertIn("Choose a game", inter.response.send_message.await_args.kwargs["embed"].description)
 
     async def test_addsource_resolve_game_error_shown_after_defer(self):
         inter = _inter()
@@ -273,7 +284,7 @@ class ModalSubmitTests(unittest.IsolatedAsyncioTestCase):
                 patch("cogs.rules.rules_forms.process_submission", new=AsyncMock()) as proc:
             await m.on_submit(inter)
         inter.response.defer.assert_awaited_once()
-        self.assertEqual(inter.followup.send.await_args.args[0], "no such game")
+        self.assertEqual(inter.followup.send.await_args.kwargs["embed"].description, "❌ no such game")
         proc.assert_not_awaited()
 
     async def test_addsource_defers_once_before_resolve(self):
@@ -289,7 +300,7 @@ class ModalSubmitTests(unittest.IsolatedAsyncioTestCase):
         with patch("cogs.rules.member_has_user_role", return_value=True), \
                 patch("cogs.rules.database.run", new=run), \
                 patch("cogs.rules.rules_forms.process_submission",
-                      new=AsyncMock(return_value=SimpleNamespace(render=lambda: "ok"))):
+                      new=AsyncMock(return_value=SubmissionResult("Catan", [], 0))):
             await m.on_submit(inter)
         self.assertEqual(order, ["defer", "resolve"])
 
@@ -310,7 +321,7 @@ class ModalSubmitTests(unittest.IsolatedAsyncioTestCase):
         m = AddSourceModal(["Catan", "Risk"])
         m.game.component._values = ["Risk"]
         m.link.component._value = "https://x"
-        res = SimpleNamespace(render=lambda: "DONE")
+        res = SubmissionResult("Risk", [], 0)
         row = {"id": 1, "name": "Risk"}
         with patch("cogs.rules.member_has_user_role", return_value=True), \
                 patch("cogs.rules.database.run", new=AsyncMock(return_value=row)), \
@@ -364,7 +375,9 @@ class RemoveBookTests(unittest.IsolatedAsyncioTestCase):
         with patch("cogs.rules.database.run", new=AsyncMock(side_effect=RulesError("no game"))):
             await cog.removebook.callback(cog, ctx, "Nope")
         ctx.interaction.response.send_modal.assert_not_awaited()
-        ctx.send.assert_awaited_once_with("no game", allowed_mentions=ANY, ephemeral=True)
+        kw = ctx.send.await_args.kwargs
+        self.assertEqual(kw["embed"].description, "❌ no game")
+        self.assertTrue(kw["ephemeral"])
 
     async def test_submit_removes_selected_book(self):
         inter = _inter()
@@ -376,8 +389,9 @@ class RemoveBookTests(unittest.IsolatedAsyncioTestCase):
                       new=AsyncMock(return_value="Base rules")) as rm:
             await m.on_submit(inter)
         self.assertEqual(rm.await_args.args[:2], (row, 7))
-        self.assertIn("Removed **Base rules** from **Catan**",
-                      inter.followup.send.await_args.args[0])
+        embed = inter.followup.send.await_args.kwargs["embed"]
+        self.assertEqual(embed.title, "🗑️ Rulebook removed")
+        self.assertIn("**Base rules** was removed from **Catan**", embed.description)
 
     async def test_submit_rejects_non_user_role(self):
         inter = _inter()
@@ -397,7 +411,7 @@ class RemoveBookTests(unittest.IsolatedAsyncioTestCase):
                 patch("cogs.rules.rules_service.remove_source",
                       new=AsyncMock(side_effect=RulesError("gone"))):
             await m.on_submit(inter)
-        self.assertEqual(inter.followup.send.await_args.args[0], "gone")
+        self.assertEqual(inter.followup.send.await_args.kwargs["embed"].description, "❌ gone")
 
 
 if __name__ == "__main__":

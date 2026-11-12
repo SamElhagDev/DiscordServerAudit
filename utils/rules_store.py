@@ -23,16 +23,19 @@ SYSTEM_INSTRUCTION = (
     'You are a rules referee for the game "{game}". Answer ONLY from the passages '
     "retrieved from this game's uploaded rulebook sources. Do not use outside "
     "knowledge, other editions, house rules, or guesses. Quote or closely paraphrase "
-    "the relevant rule and name the section or page when the passage shows it. If the "
-    "retrieved passages do not answer the question, reply with exactly NOT_IN_RULES "
-    "and nothing else. Keep answers under 250 words."
+    "the relevant rule and name the section or page when the passage shows it. Give "
+    "one consolidated answer: when several passages state the same rule, say it once. "
+    "If the retrieved passages do not answer the question, reply with exactly "
+    "NOT_IN_RULES and nothing else. Keep answers under 250 words."
 )
+MAX_QUOTES_PER_BOOK = 5
 
 
 @dataclass
 class Citation:
+    """One rulebook, with every distinct passage from it that backs the answer."""
     title: str
-    snippet: str
+    snippets: list
 
 
 @dataclass
@@ -64,22 +67,32 @@ def build_config(store_name: str, game_name: str,
     )
 
 
+def _quote(body: str) -> str:
+    # One line per quote so it renders as a single Discord "> " block quote.
+    body = " ".join((body or "").split())
+    return body if len(body) <= SNIPPET_MAX else body[:SNIPPET_MAX] + "…"
+
+
 def interpret_response(text, chunks, max_citations: int) -> RulesAnswer:
+    """Group passages by rulebook: each book is cited once, with its distinct quotes.
+
+    `max_citations` caps the number of rulebooks; each keeps up to
+    MAX_QUOTES_PER_BOOK quotes, in the order the passages were given.
+    """
     if not text or not text.strip() or NOT_FOUND_SENTINEL in text or not chunks:
         return RulesAnswer(text="", citations=[], found=False)
-    seen = set()
-    citations = []
+    books: dict[str, Citation] = {}
     for title, body in chunks:
-        key = (title, body)
-        if key in seen:
-            continue
-        seen.add(key)
-        body = body or ""
-        snippet = body if len(body) <= SNIPPET_MAX else body[:SNIPPET_MAX] + "…"
-        citations.append(Citation(title=title or "Rulebook", snippet=snippet))
-        if len(citations) >= max_citations:
-            break
-    return RulesAnswer(text=text.strip(), citations=citations, found=True)
+        title = (title or "").strip() or "Rulebook"
+        quote = _quote(body)
+        book = books.get(title)
+        if book is None:
+            if len(books) >= max_citations:
+                continue
+            book = books[title] = Citation(title=title, snippets=[])
+        if quote and quote not in book.snippets and len(book.snippets) < MAX_QUOTES_PER_BOOK:
+            book.snippets.append(quote)
+    return RulesAnswer(text=text.strip(), citations=list(books.values()), found=True)
 
 
 async def create_store(display_name: str) -> str:
@@ -222,15 +235,26 @@ async def delete_store(store_name: str) -> None:
 
 
 def _extract_chunks(response) -> list:
-    chunks = []
+    """(title, text) passages behind the answer.
+
+    Prefers the passages Gemini's grounding supports actually cite, in the order
+    the answer first uses them; falls back to every retrieved passage when the
+    response carries no supports.
+    """
     candidates = getattr(response, "candidates", None) or []
     meta = getattr(candidates[0], "grounding_metadata", None) if candidates else None
-    for gc in (getattr(meta, "grounding_chunks", None) or []):
+    # Keyed by original position: support indices refer to grounding_chunks order.
+    retrieved = {}
+    for i, gc in enumerate(getattr(meta, "grounding_chunks", None) or []):
         ctx = getattr(gc, "retrieved_context", None)
-        if ctx is None:
-            continue
-        chunks.append((getattr(ctx, "title", None) or "", getattr(ctx, "text", None) or ""))
-    return chunks
+        if ctx is not None:
+            retrieved[i] = (getattr(ctx, "title", None) or "", getattr(ctx, "text", None) or "")
+    used = []
+    for support in (getattr(meta, "grounding_supports", None) or []):
+        for i in (getattr(support, "grounding_chunk_indices", None) or []):
+            if i in retrieved and i not in used:
+                used.append(i)
+    return [retrieved[i] for i in used] if used else list(retrieved.values())
 
 
 async def ask(store_name: str, game_name: str, question: str, model: str,

@@ -95,7 +95,24 @@ def _init_rules_tables():
                 added_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_rules_sources_game ON rules_sources(game_id);
+
+            -- Quotes behind each posted answer, so its "Show sources" button
+            -- keeps working after a restart.
+            CREATE TABLE IF NOT EXISTS rules_answers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                game_id INTEGER NOT NULL,
+                question TEXT NOT NULL,
+                citations TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
         """)
+        # Local copy of each rulebook for /gamerules download (NULL = no copy kept).
+        try:
+            conn.execute("ALTER TABLE rules_sources ADD COLUMN file_path TEXT")
+            logger.info("Added file_path column to rules_sources")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
     logger.debug("rules tables ready")
 
 

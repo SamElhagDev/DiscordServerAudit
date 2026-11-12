@@ -41,7 +41,26 @@ class InterpretTests(unittest.TestCase):
         a = rs.interpret_response("ans", chunks, 3)
         self.assertTrue(a.found)
         self.assertEqual([c.title for c in a.citations], ["A", "B", "C"])
-        self.assertEqual(len(a.citations[0].snippet), 301)
+        self.assertEqual(len(a.citations[0].snippets), 1)
+        self.assertEqual(len(a.citations[0].snippets[0]), 301)
+
+    def test_same_book_grouped_once_with_each_distinct_passage(self):
+        chunks = [("Base Rules", "Roll two dice."), ("FAQ", "Doubles roll again."),
+                  ("Base Rules", "Move the robber\n on a 7."), (" Base Rules ", "Roll two dice.")]
+        a = rs.interpret_response("ans", chunks, 3)
+        self.assertEqual([c.title for c in a.citations], ["Base Rules", "FAQ"])
+        self.assertEqual(a.citations[0].snippets, ["Roll two dice.", "Move the robber on a 7."])
+
+    def test_passages_from_already_listed_book_kept_after_book_cap(self):
+        chunks = [("A", "1"), ("B", "2"), ("C", "3"), ("A", "4")]
+        a = rs.interpret_response("ans", chunks, 2)
+        self.assertEqual([c.title for c in a.citations], ["A", "B"])
+        self.assertEqual(a.citations[0].snippets, ["1", "4"])
+
+    def test_quotes_per_book_capped(self):
+        chunks = [("A", f"p{i}") for i in range(rs.MAX_QUOTES_PER_BOOK + 3)]
+        a = rs.interpret_response("ans", chunks, 3)
+        self.assertEqual(len(a.citations[0].snippets), rs.MAX_QUOTES_PER_BOOK)
 
     def test_empty_title_defaults(self):
         a = rs.interpret_response("ans", [("", "x")], 3)
@@ -162,6 +181,25 @@ class AsyncTests(unittest.IsolatedAsyncioTestCase):
             a = await rs.ask("s", "g", "q", "m", 5, 3)
         self.assertTrue(a.found)
         self.assertEqual(a.citations[0].title, "T")
+
+    async def test_ask_prefers_passages_cited_by_supports(self):
+        def ch(title, text):
+            return SimpleNamespace(retrieved_context=SimpleNamespace(title=title, text=text))
+        meta = SimpleNamespace(
+            grounding_chunks=[ch("Rules", "unused"), SimpleNamespace(retrieved_context=None),
+                              ch("Rules", "used second"), ch("FAQ", "used first")],
+            grounding_supports=[SimpleNamespace(grounding_chunk_indices=[3, 2]),
+                                SimpleNamespace(grounding_chunk_indices=[2, 9])])
+        resp = SimpleNamespace(text="Answer", candidates=[SimpleNamespace(grounding_metadata=meta)])
+        self.assertEqual(rs._extract_chunks(resp), [("FAQ", "used first"), ("Rules", "used second")])
+
+    async def test_ask_falls_back_to_all_passages_without_supports(self):
+        meta = SimpleNamespace(grounding_chunks=[
+            SimpleNamespace(retrieved_context=SimpleNamespace(title="A", text="1")),
+            SimpleNamespace(retrieved_context=SimpleNamespace(title="B", text="2"))],
+            grounding_supports=None)
+        resp = SimpleNamespace(text="Answer", candidates=[SimpleNamespace(grounding_metadata=meta)])
+        self.assertEqual(rs._extract_chunks(resp), [("A", "1"), ("B", "2")])
 
     async def test_ask_without_grounding_metadata(self):
         c = _fake_client()
